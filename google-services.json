@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "143883647297",
+    "project_id": "chur9-app",
+    "storage_bucket": "chur9-app.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:143883647297:android:727f48d9e96ac73af4c9c0",
+        "android_client_info": {
+          "package_name": "com.chur9.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDWaPHxlWT4SENisuUF5TZ-sJBszX-BGxU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

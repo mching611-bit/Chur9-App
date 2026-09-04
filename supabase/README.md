@@ -122,12 +122,22 @@ still needed from your side:
    writes `extra.eas.projectId` into `app.json`. Without it,
    `registerForPushNotificationsAsync` logs a warning and no-ops instead of
    crashing.
-2. **Firebase project + FCM V1 credentials** — create a free Firebase
-   project, generate a service account key (Project Settings → Service
-   Accounts → Generate new private key), then run `eas credentials` and
-   upload it under Android → Push Notifications. This is separate from
-   `google-services.json` — you don't need that file for push-only usage,
-   only if you want other Firebase services.
+2. **Firebase project + FCM V1 credentials.** Two separate things, both
+   needed:
+   - `google-services.json` (Firebase Console → Project Settings → your
+     Android app → download) → `google-services.json` at the repo root,
+     referenced via `android.googleServicesFile` in `app.json`. The native
+     FCM SDK linked into the Android build needs this to initialize
+     `FirebaseMessaging` at all — without it, `expo-notifications` throws
+     "unable to get Firebase messaging instance" on device, even though
+     Expo's push service is what actually delivers the payload.
+     (Corrected from an earlier version of this doc that said this file
+     wasn't needed for push-only usage — it is.)
+   - A service account key (Project Settings → Service Accounts → Generate
+     new private key) uploaded via `eas credentials` under Android → Push
+     Notifications — this is what lets Expo's push service authenticate to
+     *your* FCM project (V1 API) when it relays a push, separate from the
+     native SDK init above.
 3. **A development build for real testing.** Expo Go on Android **stopped
    supporting remote push notifications as of SDK 53** — this repo is on
    SDK 57, so Expo Go cannot receive the pushes this engine sends, contrary
