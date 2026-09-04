@@ -8,11 +8,16 @@ import {
   TextInputProps,
   View,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { colors } from "../theme/colors";
 import { fonts } from "../theme/typography";
 
 export function ScreenContainer({ children }: { children: React.ReactNode }) {
-  return <View style={styles.screen}>{children}</View>;
+  // Fixed padding alone isn't enough on devices whose safe area extends past
+  // it (e.g. a front-camera cutout) — insets.top varies per device, so it
+  // has to be measured rather than assumed.
+  const insets = useSafeAreaInsets();
+  return <View style={[styles.screen, { paddingTop: insets.top + 20 }]}>{children}</View>;
 }
 
 export function Heading({ children }: { children: React.ReactNode }) {
