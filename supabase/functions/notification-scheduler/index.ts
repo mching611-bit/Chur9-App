@@ -146,8 +146,8 @@ async function sweepDueNotifications(supabase: SupabaseClient, now: Date): Promi
   const dueInstances = (data ?? []) as unknown as DueInstanceRow[];
 
   const expoAccessToken = Deno.env.get("EXPO_ACCESS_TOKEN") ?? undefined;
-  const sendgridApiKey = Deno.env.get("SENDGRID_API_KEY");
-  const sendgridFrom = Deno.env.get("SENDGRID_FROM_EMAIL");
+  const postmarkServerToken = Deno.env.get("POSTMARK_SERVER_TOKEN");
+  const postmarkFrom = Deno.env.get("POSTMARK_FROM_EMAIL");
 
   const pushMessages: ExpoPushMessage[] = [];
   const notificationInserts: Record<string, unknown>[] = [];
@@ -201,7 +201,7 @@ async function sweepDueNotifications(supabase: SupabaseClient, now: Date): Promi
     });
     sentCount++;
 
-    if (escalateToEmail && sendgridApiKey && sendgridFrom) {
+    if (escalateToEmail && postmarkServerToken && postmarkFrom) {
       notificationInserts.push({
         id: crypto.randomUUID(),
         user_id: user.id,
@@ -211,8 +211,8 @@ async function sweepDueNotifications(supabase: SupabaseClient, now: Date): Promi
       });
       await sendEmail({
         to: user.email,
-        from: sendgridFrom,
-        apiKey: sendgridApiKey,
+        from: postmarkFrom,
+        serverToken: postmarkServerToken,
         subject: `Still outstanding: ${task.title}`,
         text: `You haven't responded to a reminder for "${task.title}". Open Chur9 to mark it done or snooze it.`,
       });

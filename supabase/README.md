@@ -34,9 +34,7 @@ fixed org timezone, or asking the user explicitly).
   platform-agnostic in practice, and matches the brief's Android-first,
   Expo-based build order.
 - `supabase/functions/_shared/email.ts` — opt-in email escalation via
-  **SendGrid**. The brief says "the SendGrid/Postmark account from M0" — M0
-  isn't in this repo, so I implemented SendGrid; swap the fetch call if the
-  account is actually Postmark.
+  **Postmark** (the M0 account this project uses).
 - `supabase/functions/notification-scheduler/index.ts` — the periodic sweep:
   marks unanswered nags as timed out (escalation), sends due nags, computes
   each task instance's next nag time.
@@ -53,8 +51,8 @@ Supabase into every Edge Function — nothing to set there. You do need to set:
 ```
 supabase secrets set CRON_SECRET=<random string>
 supabase secrets set EXPO_ACCESS_TOKEN=<optional, only if you enable Expo's enhanced push security>
-supabase secrets set SENDGRID_API_KEY=<from M0>
-supabase secrets set SENDGRID_FROM_EMAIL=<verified sender>
+supabase secrets set POSTMARK_SERVER_TOKEN=<Postmark Server API Token>
+supabase secrets set POSTMARK_FROM_EMAIL=<verified sender>
 ```
 
 `CRON_SECRET` just stops the public function URL from being invoked by
@@ -119,7 +117,7 @@ still needed from your side:
    prompts and the notification category/action-button UI via a local test
    notification (`Notifications.scheduleNotificationAsync`) — just not for
    an actual remote push round-trip.
-4. **SendGrid API key + verified sender** (see above) for the email
+4. **Postmark Server API Token + verified sender** (see above) for the email
    escalation channel.
 
 ## Design notes / assumptions worth double-checking
