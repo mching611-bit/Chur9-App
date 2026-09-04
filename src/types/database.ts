@@ -5,6 +5,8 @@
 export type TaskType = "custom" | "recurring";
 export type TaskDifficulty = "easy" | "medium" | "hard";
 export type TaskInstanceStatus = "active" | "completed" | "overdue";
+export type NotificationChannel = "push" | "email";
+export type NotificationAction = "done" | "snooze_30" | "snooze_2hr" | "none";
 
 export interface UserRow {
   id: string;
@@ -13,6 +15,11 @@ export interface UserRow {
   default_churless_level: number;
   total_points: number;
   rank: string;
+  quiet_hours_start: string | null;
+  quiet_hours_end: string | null;
+  email_opt_in: boolean;
+  push_token: string | null;
+  timezone: string;
 }
 
 export interface TaskRow {
@@ -32,6 +39,9 @@ export interface TaskInstanceRow {
   due_at: string;
   completed_at: string | null;
   status: TaskInstanceStatus;
+  next_notification_at: string | null;
+  notification_count: number;
+  consecutive_ignored: number;
 }
 
 export interface CalendarEventRow {
@@ -47,8 +57,11 @@ export interface NotificationRow {
   user_id: string;
   task_instance_id: string | null;
   scheduled_for: string | null;
-  sent_at: string | null;
+  sent_at: string;
   created_at: string;
+  channel: NotificationChannel;
+  action_taken: NotificationAction | null;
+  responded_at: string | null;
 }
 
 export interface PointsLedgerRow {

@@ -82,9 +82,14 @@ export default function TaskListScreen({ navigation }: Props) {
           <MetaText>FORM CH-03 · TASK LOG</MetaText>
           <Heading>Your tasks</Heading>
         </View>
-        <Pressable onPress={signOut}>
-          <Text style={styles.signOut}>Sign out</Text>
-        </Pressable>
+        <View style={styles.headerActions}>
+          <Pressable onPress={() => navigation.navigate("NotificationSettings")}>
+            <Text style={styles.headerLink}>Notifications</Text>
+          </Pressable>
+          <Pressable onPress={signOut}>
+            <Text style={styles.signOut}>Sign out</Text>
+          </Pressable>
+        </View>
       </View>
 
       <SegmentedControl options={TABS} value={tab} onChange={setTab} />
@@ -125,6 +130,16 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "flex-start",
+  },
+  headerActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 16,
+  },
+  headerLink: {
+    color: colors.ink,
+    fontSize: 13,
+    fontWeight: "600",
   },
   signOut: {
     color: colors.stampRed,

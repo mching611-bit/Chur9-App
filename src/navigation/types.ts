@@ -6,4 +6,5 @@ export type AuthStackParamList = {
 export type AppStackParamList = {
   TaskList: undefined;
   TaskForm: { taskId: string; instanceId: string } | undefined;
+  NotificationSettings: undefined;
 };

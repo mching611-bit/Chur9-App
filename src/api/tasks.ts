@@ -9,7 +9,7 @@ import type {
   TaskWithInstance,
 } from "../types/database";
 
-async function getCurrentUserId(): Promise<string> {
+export async function getCurrentUserId(): Promise<string> {
   const { data, error } = await supabase.auth.getUser();
   if (error || !data.user) throw new Error(error?.message ?? "Not signed in.");
   return data.user.id;
