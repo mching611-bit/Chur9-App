@@ -20,6 +20,12 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "fc81e499-a163-4b74-9c98-4e198567aef8"
+      }
+    },
+    "owner": "micching"
   }
 }
