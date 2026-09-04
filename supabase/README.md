@@ -42,8 +42,16 @@ fixed org timezone, or asking the user explicitly).
 ### Deploying the function
 
 ```
-supabase functions deploy notification-scheduler
+supabase functions deploy notification-scheduler --no-verify-jwt
 ```
+
+`--no-verify-jwt` matters: Supabase's platform gateway requires a valid
+Authorization JWT on every Edge Function call by default, which a cron
+trigger (no logged-in user) can't supply. This function isn't
+user-invoked — it authenticates the caller itself via `CRON_SECRET` — so
+skipping the platform's JWT check and relying on that header is simpler
+than smuggling a service-role key into a cron job config that isn't
+checked into the repo either way.
 
 `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are injected automatically by
 Supabase into every Edge Function — nothing to set there. You do need to set:
@@ -61,10 +69,31 @@ header.
 
 ### Wiring the schedule
 
-The function expects to be invoked every ~5 minutes. Two ways to do that;
-pick one:
+The function expects to be invoked every ~5 minutes. This project uses
+**Supabase Dashboard → Cron Jobs** (Database → Cron Jobs in the left nav;
+some projects show it under Integrations → Cron). Set it up as:
 
-**Option A — pg_cron + pg_net (portable, lives in SQL):**
+1. **Database → Cron Jobs → Create a new cron job.**
+2. **Name**: `chur9-notification-sweep`.
+3. **Schedule**: `*/5 * * * *` (every 5 minutes).
+4. **Type**: HTTP Request.
+5. **Method**: `POST`.
+6. **URL**: `https://<project-ref>.supabase.co/functions/v1/notification-scheduler`
+   — find `<project-ref>` in Project Settings → General (it's the same
+   string as in your `EXPO_PUBLIC_SUPABASE_URL`).
+7. **HTTP Headers**: add one —
+   `x-cron-secret: <same value you set for the CRON_SECRET secret>`.
+8. **HTTP Body**: `{}` (the function doesn't read the body, but the field
+   usually needs something in it).
+9. Save.
+
+That single header is doing the authentication — the function was
+deployed with `--no-verify-jwt` (see above), so no Authorization header is
+needed here, only `x-cron-secret`, which the function checks itself.
+
+This is dashboard-only state, not something checked into the repo — if you
+ever need to reproduce it via SQL/CLI instead (e.g. scripting a new
+environment), the equivalent is pg_cron + pg_net:
 
 ```sql
 create extension if not exists pg_cron;
@@ -75,18 +104,13 @@ select cron.schedule(
   '*/5 * * * *',
   $$
   select net.http_post(
-    url := 'https://<project-ref>.functions.supabase.co/notification-scheduler',
+    url := 'https://<project-ref>.supabase.co/functions/v1/notification-scheduler',
     headers := jsonb_build_object('x-cron-secret', '<same value as CRON_SECRET>'),
     body := '{}'::jsonb
   );
   $$
 );
 ```
-
-**Option B — Supabase Dashboard → Edge Functions → notification-scheduler →
-Cron**, if your plan supports it. Functionally equivalent; no SQL to
-maintain, but it's dashboard-only state rather than something checked into
-the repo.
 
 ## Client (Expo) setup
 
