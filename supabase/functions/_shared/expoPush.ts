@@ -12,7 +12,12 @@ export interface ExpoPushMessage {
   title: string;
   body: string;
   data?: Record<string, unknown>;
-  categoryIdentifier?: string;
+  // Expo Push API field name for this is `categoryId`, distinct from the
+  // client-side expo-notifications `categoryIdentifier` used when
+  // registering the category on-device (see setNotificationCategoryAsync
+  // in src/lib/pushNotifications.ts) — the value must still match that
+  // registered identifier, only the wire field name differs.
+  categoryId?: string;
   sound?: "default";
   priority?: "default" | "normal" | "high";
 }
