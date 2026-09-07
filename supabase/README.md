@@ -195,3 +195,16 @@ still needed from your side:
   opening the app" behavior Android gets natively isn't wired for iOS — the
   brief already scopes iOS verification as blocked on the Apple Developer
   account anyway.
+- **Push delivery receipts** (`migrations/0003_push_receipts.sql`): a
+  ticket from Expo's send call only means Expo accepted the message into
+  its own queue, not that FCM/APNs or the device ever got it — a silent
+  drop (bad/expired push credentials, `DeviceNotRegistered`, rate
+  limiting) looks identical to "the device just didn't present it"
+  without checking receipts separately. `sweepReceipts` in
+  `notification-scheduler/index.ts` follows up on each ticket ~2 minutes
+  after sending (Expo's queue is async) and records the result on the
+  `notifications` row (`receipt_checked_at`, `expo_receipt_error`) —
+  check there first the next time a push looks like it vanished, before
+  reaching for a live logcat capture. A `DeviceNotRegistered` receipt
+  also clears that user's `push_token` so future sweeps stop sending to a
+  dead device.

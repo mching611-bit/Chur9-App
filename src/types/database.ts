@@ -62,6 +62,9 @@ export interface NotificationRow {
   channel: NotificationChannel;
   action_taken: NotificationAction | null;
   responded_at: string | null;
+  expo_ticket_id: string | null;
+  receipt_checked_at: string | null;
+  expo_receipt_error: string | null;
 }
 
 export interface PointsLedgerRow {

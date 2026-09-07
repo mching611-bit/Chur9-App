@@ -23,7 +23,7 @@ import {
   rescheduleOutsideQuietHours,
   shouldEscalateToEmail,
 } from "../_shared/scheduling.ts";
-import { ExpoPushMessage, sendExpoPushNotifications } from "../_shared/expoPush.ts";
+import { checkExpoPushReceipts, ExpoPushMessage, sendExpoPushNotifications } from "../_shared/expoPush.ts";
 import { sendEmail } from "../_shared/email.ts";
 
 const IGNORED_THRESHOLD_MINUTES = 20; // brief suggests 15-30 min; tune later.
@@ -71,7 +71,8 @@ Deno.serve(async (req) => {
   try {
     const escalated = await sweepEscalations(supabase, now);
     const sent = await sweepDueNotifications(supabase, now);
-    return new Response(JSON.stringify({ ok: true, escalated, sent }), {
+    const receiptsChecked = await sweepReceipts(supabase, now, Deno.env.get("EXPO_ACCESS_TOKEN") ?? undefined);
+    return new Response(JSON.stringify({ ok: true, escalated, sent, receiptsChecked }), {
       headers: { "content-type": "application/json" },
     });
   } catch (err) {
@@ -249,9 +250,90 @@ async function sweepDueNotifications(supabase: SupabaseClient, now: Date): Promi
     const { error: insertErr } = await supabase.from("notifications").insert(notificationInserts);
     if (insertErr) console.error("failed to log sent notifications", insertErr.message);
   }
-  await sendExpoPushNotifications(pushMessages, expoAccessToken);
+
+  const tickets = await sendExpoPushNotifications(pushMessages, expoAccessToken);
+  // A ticket is Expo accepting the message into its own queue, not proof
+  // of delivery — stash the ticket id so sweepReceipts can follow up and
+  // find out whether FCM/APNs (and the device) actually got it.
+  for (let i = 0; i < pushMessages.length; i++) {
+    const ticket = tickets[i];
+    const notificationId = pushMessages[i].data.notificationId as string | undefined;
+    if (!ticket?.id || !notificationId) continue;
+    const { error: ticketErr } = await supabase
+      .from("notifications")
+      .update({ expo_ticket_id: ticket.id })
+      .eq("id", notificationId);
+    if (ticketErr) console.error("failed to save expo_ticket_id", notificationId, ticketErr.message);
+  }
 
   return sentCount;
+}
+
+const RECEIPT_MIN_AGE_MINUTES = 2; // give Expo's queue time to actually process the ticket
+const RECEIPT_MAX_AGE_HOURS = 24; // Expo drops receipts after roughly this long
+const RECEIPT_BATCH_LIMIT = 100;
+
+/**
+ * Follows up on tickets from a prior sweep to find out whether the push
+ * actually reached FCM/APNs — a ticket status of "ok" only means Expo
+ * accepted the message into its own queue. This is what would have shown
+ * the "Testing 8" push (ticket ok, nothing ever arrived) failing for a
+ * reason like DeviceNotRegistered or an FCM credential problem, without
+ * needing a live on-device logcat capture to find out.
+ */
+async function sweepReceipts(supabase: SupabaseClient, now: Date, accessToken?: string): Promise<number> {
+  const recentCutoff = new Date(now.getTime() - RECEIPT_MIN_AGE_MINUTES * 60_000).toISOString();
+  const oldCutoff = new Date(now.getTime() - RECEIPT_MAX_AGE_HOURS * 3600_000).toISOString();
+
+  const { data, error } = await supabase
+    .from("notifications")
+    .select("id, user_id, expo_ticket_id")
+    .eq("channel", "push")
+    .not("expo_ticket_id", "is", null)
+    .is("receipt_checked_at", null)
+    .lt("sent_at", recentCutoff)
+    .gt("sent_at", oldCutoff)
+    .limit(RECEIPT_BATCH_LIMIT);
+
+  if (error) {
+    console.error("sweepReceipts select failed", error.message);
+    return 0;
+  }
+  const rows = (data ?? []) as { id: string; user_id: string; expo_ticket_id: string }[];
+  if (rows.length === 0) return 0;
+
+  const receipts = await checkExpoPushReceipts(
+    rows.map((r) => r.expo_ticket_id),
+    accessToken
+  );
+
+  for (const row of rows) {
+    const receipt = receipts[row.expo_ticket_id];
+    // Not back yet from Expo — leave receipt_checked_at null so this row
+    // gets retried next sweep, same as before.
+    if (!receipt) continue;
+
+    const receiptError =
+      receipt.status === "error" ? receipt.details?.error ?? receipt.message ?? "unknown" : null;
+    if (receiptError) {
+      console.error("Expo push receipt error", { notificationId: row.id, error: receiptError });
+    }
+
+    await supabase
+      .from("notifications")
+      .update({ receipt_checked_at: now.toISOString(), expo_receipt_error: receiptError })
+      .eq("id", row.id);
+
+    // DeviceNotRegistered means this token is dead (app uninstalled, or
+    // Expo rotated it) — clear it so future sweeps stop wasting sends on
+    // it; registerForPushNotificationsAsync issues a fresh one next time
+    // the app opens.
+    if (receiptError === "DeviceNotRegistered") {
+      await supabase.from("users").update({ push_token: null }).eq("id", row.user_id);
+    }
+  }
+
+  return rows.length;
 }
 
 async function computeAvgResponseByHour(
