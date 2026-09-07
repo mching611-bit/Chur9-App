@@ -12,6 +12,17 @@
 // (`expo-dev-client` / `eas build --profile development`) for real
 // end-to-end verification — Expo Go is only useful here for exercising the
 // permission/category/local-notification plumbing.
+//
+// The push the server sends is data-only (no top-level title/body) — see
+// supabase/functions/notification-scheduler/index.ts. On Android, a push
+// that DOES have a title/body gets auto-displayed by Google Play Services'
+// own FCM SDK before this app's code ever runs, which was the actual cause
+// of the Done/Snooze buttons never appearing: that auto-built system
+// notification has no idea a "task_reminder" category exists. A data-only
+// message instead always reaches this file's code (foreground: the
+// received listener below; background/killed: the TaskManager task below),
+// which builds and presents the notification itself via
+// scheduleNotificationAsync, with the category attached correctly.
 
 import * as Device from "expo-device";
 import Constants from "expo-constants";
@@ -29,6 +40,23 @@ interface ReminderData {
   notificationId?: string;
   taskInstanceId?: string;
   taskId?: string;
+  title?: string;
+  body?: string;
+}
+
+/** Builds and shows the actual system notification from a reminder push's data, category attached. */
+async function presentReminderNotification(data: ReminderData): Promise<void> {
+  if (!data?.notificationId) return;
+  await Notifications.scheduleNotificationAsync({
+    content: {
+      title: data.title ?? "Chur9",
+      body: data.body ?? "",
+      data: { notificationId: data.notificationId, taskInstanceId: data.taskInstanceId, taskId: data.taskId },
+      categoryIdentifier: TASK_REMINDER_CATEGORY,
+      sound: "default",
+    },
+    trigger: Platform.OS === "android" ? { channelId: "default" } : null,
+  });
 }
 
 Notifications.setNotificationHandler({
@@ -146,9 +174,19 @@ async function handleNotificationResponse(response: Notifications.NotificationRe
   }
 }
 
-/** Call once near app startup. Wires the foreground listener and the Android background action task. */
+/** Call once near app startup. Wires the foreground listeners and the Android background task. */
 export function setupNotificationResponseHandling(): () => void {
-  const subscription = Notifications.addNotificationResponseReceivedListener(handleNotificationResponse);
+  const responseSubscription = Notifications.addNotificationResponseReceivedListener(
+    handleNotificationResponse
+  );
+
+  // Fires when a push arrives while the JS runtime is already up (app in
+  // foreground). Since our push is data-only, nothing gets auto-displayed —
+  // this is the one place responsible for actually showing it, matching
+  // the plain-received branch of the background task below.
+  const receivedSubscription = Notifications.addNotificationReceivedListener((notification) => {
+    void presentReminderNotification(notification.request.content.data as ReminderData);
+  });
 
   // Covers the case where the app was killed and an action button launched
   // it: the response that caused the cold start doesn't replay through the
@@ -157,31 +195,55 @@ export function setupNotificationResponseHandling(): () => void {
     if (response) handleNotificationResponse(response);
   });
 
-  return () => subscription.remove();
+  return () => {
+    responseSubscription.remove();
+    receivedSubscription.remove();
+  };
 }
 
 if (!TaskManager.isTaskDefined(BACKGROUND_NOTIFICATION_TASK)) {
-  TaskManager.defineTask(BACKGROUND_NOTIFICATION_TASK, async ({ data, error }) => {
-    if (error) {
-      console.error("Background notification task error", error);
-      return;
+  TaskManager.defineTask<Notifications.NotificationTaskPayload>(
+    BACKGROUND_NOTIFICATION_TASK,
+    async ({ data, error }) => {
+      if (error) {
+        console.error("Background notification task error", error);
+        return;
+      }
+      if (!data) return;
+
+      if ("actionIdentifier" in data) {
+        // A Done/Snooze tap (or a plain tap) while backgrounded/killed —
+        // `data` here already *is* the NotificationResponse.
+        await handleNotificationResponse(data);
+        return;
+      }
+
+      // Plain delivery, no user interaction yet — app was backgrounded or
+      // killed when the push arrived. `data.data.dataString` carries our
+      // custom payload as a JSON string (see NotificationTaskPayload).
+      try {
+        const parsed = data.data.dataString ? JSON.parse(data.data.dataString) : data.data;
+        await presentReminderNotification(parsed as ReminderData);
+      } catch (err) {
+        console.error("Failed to present reminder from background task", err);
+      }
     }
-    const response = (data as { notification?: Notifications.NotificationResponse } | undefined)
-      ?.notification;
-    if (response) await handleNotificationResponse(response);
-  });
+  );
 }
 
 /**
- * Registers the Android background task so a Done/Snooze tap is recorded
- * even if the app process isn't already running. iOS action handling
- * without opening the app is more limited under Expo's managed workflow;
- * for now iOS actions are handled via the foreground/cold-start paths
- * above, consistent with the brief treating iOS as best-effort until the
+ * Registers the background task so a backgrounded/killed app can still
+ * present a reminder (and, on Android, record a Done/Snooze tap directly)
+ * without the JS runtime already running. Needed on both platforms now
+ * that the push itself is silent/data-only everywhere — a regular push
+ * used to get auto-displayed by the OS on its own, a silent one won't.
+ * iOS action-tap handling specifically (as opposed to plain delivery)
+ * still isn't caught by this task while backgrounded/killed per Expo's
+ * docs — that path is limited to the foreground/cold-start listeners
+ * above — consistent with the brief treating iOS as best-effort until the
  * Apple Developer account is active.
  */
 export async function registerBackgroundNotificationTaskAsync(): Promise<void> {
-  if (Platform.OS !== "android") return;
   try {
     await Notifications.registerTaskAsync(BACKGROUND_NOTIFICATION_TASK);
   } catch (err) {

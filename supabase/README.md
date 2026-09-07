@@ -173,6 +173,20 @@ still needed from your side:
   minutes per hour-of-day bucket, min 3 samples to trust a bucket) rather
   than a stored aggregate table, per the brief's "don't over-engineer"
   steer. Revisit if the per-run query cost becomes a problem at scale.
+- **The push is data-only — no top-level title/body.** Originally sent as
+  a normal Expo push (title/body/categoryId/channelId at the top level),
+  which worked for delivery but never showed the Done/Snooze buttons: on
+  Android, a push carrying title/body gets auto-displayed by Google Play
+  Services' own FCM SDK before the app's code ever runs (confirmed via adb
+  logcat — an auto-posted `NotificationRecord` tagged
+  `FCM-Notification:...`, no actions attached, category never consulted).
+  Fixed by moving title/body into `data` and having the client build +
+  present the notification itself (`presentReminderNotification` in
+  `src/lib/pushNotifications.ts`, via `scheduleNotificationAsync` with
+  `categoryIdentifier` set) from both a foreground listener and a
+  `expo-task-manager` background task — the same mechanism now registers
+  on iOS too, since a silent push doesn't get OS-auto-displayed there
+  either once title/body move out of the top level.
 - **iOS action buttons**: registered the same `task_reminder` category on
   both platforms, but background (app-not-running) handling of a tapped
   action is Android-only for now (`expo-task-manager` background

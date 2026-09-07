@@ -192,13 +192,18 @@ async function sweepDueNotifications(supabase: SupabaseClient, now: Date): Promi
     });
     pushMessages.push({
       to: user.push_token,
-      title: "Chur9",
-      body: task.title,
-      categoryId: "task_reminder",
-      channelId: "default",
-      sound: "default",
       priority: "high",
-      data: { notificationId, taskInstanceId: instance.id, taskId: task.id },
+      _contentAvailable: true,
+      // No top-level title/body — see the comment on ExpoPushMessage in
+      // _shared/expoPush.ts for why. The client builds the actual
+      // notification from these fields itself.
+      data: {
+        notificationId,
+        taskInstanceId: instance.id,
+        taskId: task.id,
+        title: "Chur9",
+        body: task.title,
+      },
     });
     sentCount++;
 

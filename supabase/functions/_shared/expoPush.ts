@@ -9,24 +9,24 @@ const BATCH_SIZE = 100; // Expo's documented max messages per request.
 
 export interface ExpoPushMessage {
   to: string;
-  title: string;
-  body: string;
-  data?: Record<string, unknown>;
-  // Expo Push API field name for this is `categoryId`, distinct from the
-  // client-side expo-notifications `categoryIdentifier` used when
-  // registering the category on-device (see setNotificationCategoryAsync
-  // in src/lib/pushNotifications.ts) — the value must still match that
-  // registered identifier, only the wire field name differs.
-  categoryId?: string;
-  // Must match a channel created client-side via
-  // Notifications.setNotificationChannelAsync (see
-  // registerForPushNotificationsAsync in src/lib/pushNotifications.ts).
-  // Not strictly required — Expo falls back to a "default" channel if
-  // omitted — but explicit here so there's one less thing to guess about
-  // when actions don't show up.
-  channelId?: string;
-  sound?: "default";
+  // Deliberately no top-level title/body: on Android, a push that carries
+  // them gets auto-displayed by Google Play Services' FCM SDK — a plain
+  // system notification with no idea our "task_reminder" category exists —
+  // before this app's own code ever runs (confirmed via adb logcat: an
+  // auto-posted `NotificationRecord` tagged `FCM-Notification:...`, and no
+  // actions attached). Put title/body inside `data` instead; the client
+  // (src/lib/pushNotifications.ts) reads them from there and builds +
+  // presents the notification itself via scheduleNotificationAsync, with
+  // the category correctly attached. `categoryId`/`channelId` server-side
+  // fields are gone for the same reason — they only mattered for the
+  // auto-display path we're no longer using.
+  data: Record<string, unknown>;
   priority?: "default" | "normal" | "high";
+  // Expo Push API field for a silent/background push (maps to APNs
+  // content-available on iOS; harmless no-op for Android, which always
+  // delivers data messages to the app regardless of this flag — set for
+  // both since the engine is meant to be platform-agnostic).
+  _contentAvailable?: boolean;
 }
 
 interface ExpoPushTicket {
