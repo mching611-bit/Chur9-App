@@ -153,8 +153,23 @@ export async function registerForPushNotificationsAsync(): Promise<string | null
 
 /** Routes a tapped action (or a foreground tap with no action = treat as "opened") back to the API. */
 async function handleNotificationResponse(response: Notifications.NotificationResponse): Promise<void> {
+  const identifier = response.notification.request.identifier;
+  // Traced with a fixed, greppable prefix: on Android this can run inside
+  // a headless JS task (app backgrounded/killed), whose console output
+  // doesn't reach Metro's interactive log — only `adb logcat`, tag
+  // ReactNativeJS. Logging every step, not just failures, so it's
+  // possible to tell "never ran" apart from "ran but a step silently
+  // didn't do what it should."
+  console.log("[chur9-notif] handleNotificationResponse", {
+    identifier,
+    actionIdentifier: response.actionIdentifier,
+  });
+
   const data = response.notification.request.content.data as ReminderData;
-  if (!data?.notificationId) return;
+  if (!data?.notificationId) {
+    console.log("[chur9-notif] no notificationId in payload, ignoring", data);
+    return;
+  }
 
   const actionIdentifier = response.actionIdentifier;
   const action: NotificationAction | null =
@@ -171,17 +186,22 @@ async function handleNotificationResponse(response: Notifications.NotificationRe
   // present these notifications ourselves via scheduleNotificationAsync
   // rather than relying on OS-default handling, nothing removes them from
   // the shade unless we do it explicitly here.
-  if (!action) return;
+  if (!action) {
+    console.log("[chur9-notif] plain tap, not an action button — nothing to record or dismiss");
+    return;
+  }
 
   try {
     await recordNotificationAction(data.notificationId, action);
+    console.log("[chur9-notif] recordNotificationAction ok", { notificationId: data.notificationId, action });
   } catch (err) {
-    console.error("Failed to record notification action", err);
+    console.error("[chur9-notif] recordNotificationAction failed", err);
   } finally {
     try {
-      await Notifications.dismissNotificationAsync(response.notification.request.identifier);
+      await Notifications.dismissNotificationAsync(identifier);
+      console.log("[chur9-notif] dismissNotificationAsync ok", { identifier });
     } catch (err) {
-      console.error("Failed to dismiss notification", err);
+      console.error("[chur9-notif] dismissNotificationAsync failed", { identifier, err });
     }
   }
 }

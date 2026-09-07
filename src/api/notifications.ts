@@ -88,10 +88,20 @@ export async function recordNotificationAction(
   }
 
   if (action === "snooze_30" || action === "snooze_2hr") {
-    const nextNotificationAt = new Date(Date.now() + SNOOZE_MINUTES[action] * 60_000);
+    const nextAt = new Date(Date.now() + SNOOZE_MINUTES[action] * 60_000);
+    // due_at (not just next_notification_at) has to move too: the task
+    // list and mark_overdue_task_instances (M1) key off due_at/status, not
+    // the M2 scheduling field, and mark_overdue_task_instances only ever
+    // flips active -> overdue, never back — so an already-overdue instance
+    // needs status reset explicitly or it stays "overdue" forever even
+    // once due_at is back in the future.
     const { error } = await supabase
       .from("task_instances")
-      .update({ next_notification_at: nextNotificationAt.toISOString() })
+      .update({
+        next_notification_at: nextAt.toISOString(),
+        due_at: nextAt.toISOString(),
+        status: "active",
+      })
       .eq("id", taskInstanceId);
     if (error) throw new Error(error.message);
   }
