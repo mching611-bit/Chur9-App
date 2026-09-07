@@ -164,13 +164,25 @@ async function handleNotificationResponse(response: Notifications.NotificationRe
 
   // A plain tap (Notifications.DEFAULT_ACTION_IDENTIFIER) opens the app to
   // the task instead of recording an action — only the three buttons above
-  // count as a response for escalation/send-time-learning purposes.
+  // count as a response for escalation/send-time-learning purposes. A
+  // plain tap also auto-dismisses on its own (default content-tap
+  // behavior), unlike the three actions below, which run with
+  // opensAppToForeground: false and never go through that path — since we
+  // present these notifications ourselves via scheduleNotificationAsync
+  // rather than relying on OS-default handling, nothing removes them from
+  // the shade unless we do it explicitly here.
   if (!action) return;
 
   try {
     await recordNotificationAction(data.notificationId, action);
   } catch (err) {
     console.error("Failed to record notification action", err);
+  } finally {
+    try {
+      await Notifications.dismissNotificationAsync(response.notification.request.identifier);
+    } catch (err) {
+      console.error("Failed to dismiss notification", err);
+    }
   }
 }
 
