@@ -195,6 +195,7 @@ async function sweepDueNotifications(supabase: SupabaseClient, now: Date): Promi
       title: "Chur9",
       body: task.title,
       categoryId: "task_reminder",
+      channelId: "default",
       sound: "default",
       priority: "high",
       data: { notificationId, taskInstanceId: instance.id, taskId: task.id },

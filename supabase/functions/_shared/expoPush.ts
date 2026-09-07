@@ -18,8 +18,22 @@ export interface ExpoPushMessage {
   // in src/lib/pushNotifications.ts) — the value must still match that
   // registered identifier, only the wire field name differs.
   categoryId?: string;
+  // Must match a channel created client-side via
+  // Notifications.setNotificationChannelAsync (see
+  // registerForPushNotificationsAsync in src/lib/pushNotifications.ts).
+  // Not strictly required — Expo falls back to a "default" channel if
+  // omitted — but explicit here so there's one less thing to guess about
+  // when actions don't show up.
+  channelId?: string;
   sound?: "default";
   priority?: "default" | "normal" | "high";
+}
+
+interface ExpoPushTicket {
+  status: "ok" | "error";
+  id?: string;
+  message?: string;
+  details?: Record<string, unknown>;
 }
 
 export async function sendExpoPushNotifications(
@@ -28,6 +42,11 @@ export async function sendExpoPushNotifications(
 ): Promise<void> {
   if (messages.length === 0) return;
   for (const batch of chunk(messages, BATCH_SIZE)) {
+    // Full outgoing payload, so a mismatched field (categoryId, channelId,
+    // whatever's next) shows up in `supabase functions logs
+    // notification-scheduler` instead of being guessed at.
+    console.log("Expo push request", JSON.stringify(batch));
+
     const res = await fetch(EXPO_PUSH_URL, {
       method: "POST",
       headers: {
@@ -38,9 +57,32 @@ export async function sendExpoPushNotifications(
       },
       body: JSON.stringify(batch),
     });
+
+    const bodyText = await res.text();
     if (!res.ok) {
-      console.error("Expo push send failed", res.status, await res.text());
+      console.error("Expo push send failed", res.status, bodyText);
+      continue;
     }
+
+    // A 200 here only means Expo accepted the HTTP request — each message
+    // gets its own ticket, and a per-message problem (bad token, rejected
+    // field, etc.) shows up as status: "error" on that ticket, not as an
+    // HTTP failure. Logging every ticket, not just failures, so a
+    // "status: ok" here at least rules out the send step.
+    let parsed: { data?: ExpoPushTicket[] } | undefined;
+    try {
+      parsed = JSON.parse(bodyText);
+    } catch {
+      console.error("Expo push response was not valid JSON", bodyText);
+      continue;
+    }
+    (parsed?.data ?? []).forEach((ticket, i) => {
+      if (ticket.status === "error") {
+        console.error("Expo push ticket error", { message: batch[i]?.to, ticket });
+      } else {
+        console.log("Expo push ticket ok", { message: batch[i]?.to, id: ticket.id });
+      }
+    });
   }
 }
 

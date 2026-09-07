@@ -41,23 +41,44 @@ Notifications.setNotificationHandler({
 });
 
 export async function registerNotificationCategoriesAsync(): Promise<void> {
-  await Notifications.setNotificationCategoryAsync(TASK_REMINDER_CATEGORY, [
-    {
-      identifier: "done",
-      buttonTitle: "Done",
-      options: { opensAppToForeground: false },
-    },
-    {
-      identifier: "snooze_30",
-      buttonTitle: "Snooze 30 min",
-      options: { opensAppToForeground: false },
-    },
-    {
-      identifier: "snooze_2hr",
-      buttonTitle: "Snooze 2 hrs",
-      options: { opensAppToForeground: false },
-    },
-  ]);
+  try {
+    await Notifications.setNotificationCategoryAsync(TASK_REMINDER_CATEGORY, [
+      {
+        identifier: "done",
+        buttonTitle: "Done",
+        options: { opensAppToForeground: false },
+      },
+      {
+        identifier: "snooze_30",
+        buttonTitle: "Snooze 30 min",
+        options: { opensAppToForeground: false },
+      },
+      {
+        identifier: "snooze_2hr",
+        buttonTitle: "Snooze 2 hrs",
+        options: { opensAppToForeground: false },
+      },
+    ]);
+    // Read the registration back rather than trusting the call above
+    // resolved cleanly — this was previously fire-and-forget from App.tsx
+    // (no await, no .catch), so a failure here would otherwise be a
+    // silent no-op with no visible symptom other than "no action buttons."
+    const registered = await Notifications.getNotificationCategoriesAsync();
+    const found = registered.find((c) => c.identifier === TASK_REMINDER_CATEGORY);
+    if (!found) {
+      console.error(
+        `Category "${TASK_REMINDER_CATEGORY}" not present after registration`,
+        registered.map((c) => c.identifier)
+      );
+    } else {
+      console.log(
+        `Category "${TASK_REMINDER_CATEGORY}" registered with actions`,
+        found.actions.map((a) => a.identifier)
+      );
+    }
+  } catch (err) {
+    console.error("Failed to register notification categories", err);
+  }
 }
 
 /**

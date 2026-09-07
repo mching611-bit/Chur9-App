@@ -16,6 +16,8 @@ export default function App() {
     // Device-level setup that doesn't depend on being signed in yet; the
     // push token itself is registered once a session exists (see
     // RootNavigator's AppNavigator).
+    // registerNotificationCategoriesAsync handles/logs its own errors
+    // internally (see src/lib/pushNotifications.ts) rather than rejecting.
     registerNotificationCategoriesAsync();
     registerBackgroundNotificationTaskAsync();
     const teardown = setupNotificationResponseHandling();
