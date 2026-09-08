@@ -18,6 +18,29 @@ function dayOfWeek(date: Date): number {
   return date.getDay();
 }
 
+/**
+ * A recurring task's definition asks for a time of day, not a calendar
+ * date (see TaskFormScreen) — this finds the first due_at for a brand new
+ * recurring task: today at that time if it hasn't passed yet (and, for
+ * "weekdays", today is a weekday), otherwise the next occurrence per the
+ * rule.
+ */
+export function computeFirstDueDate(
+  rule: RecurrenceRule,
+  timeOfDay: { hour: number; minute: number },
+  now: Date
+): Date {
+  const candidate = new Date(now);
+  candidate.setHours(timeOfDay.hour, timeOfDay.minute, 0, 0);
+
+  const alreadyPassed = candidate <= now;
+  const onWeekend = rule === "weekdays" && (candidate.getDay() === 0 || candidate.getDay() === 6);
+  if (alreadyPassed || onWeekend) {
+    return computeNextDueDate(rule, candidate);
+  }
+  return candidate;
+}
+
 export function computeNextDueDate(rule: string, fromDate: Date): Date {
   switch (rule) {
     case "daily":

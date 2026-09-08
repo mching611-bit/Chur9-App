@@ -21,20 +21,26 @@ export function formatTimePart(date: Date): string {
 /** Combines a "YYYY-MM-DD" and "HH:MM" string into a local Date, or null if invalid. */
 export function parseDateAndTime(datePart: string, timePart: string): Date | null {
   const dateMatch = DATE_RE.exec(datePart.trim());
-  const timeMatch = TIME_RE.exec(timePart.trim());
-  if (!dateMatch || !timeMatch) return null;
+  const timeOfDay = parseTimeOnly(timePart);
+  if (!dateMatch || !timeOfDay) return null;
 
   const [, y, m, d] = dateMatch;
-  const [, h, min] = timeMatch;
-  const hourNum = Number(h);
-  const minNum = Number(min);
   const monthNum = Number(m);
   const dayNum = Number(d);
-  if (hourNum > 23 || minNum > 59 || monthNum < 1 || monthNum > 12 || dayNum < 1 || dayNum > 31) {
-    return null;
-  }
+  if (monthNum < 1 || monthNum > 12 || dayNum < 1 || dayNum > 31) return null;
 
-  const date = new Date(Number(y), monthNum - 1, dayNum, hourNum, minNum, 0, 0);
+  const date = new Date(Number(y), monthNum - 1, dayNum, timeOfDay.hour, timeOfDay.minute, 0, 0);
   if (Number.isNaN(date.getTime())) return null;
   return date;
+}
+
+/** Parses a bare "HH:MM" string, or null if invalid. For a recurring task's definition, which asks for a time of day only (see computeFirstDueDate in utils/recurrence.ts). */
+export function parseTimeOnly(timePart: string): { hour: number; minute: number } | null {
+  const match = TIME_RE.exec(timePart.trim());
+  if (!match) return null;
+  const [, h, min] = match;
+  const hour = Number(h);
+  const minute = Number(min);
+  if (hour > 23 || minute > 59) return null;
+  return { hour, minute };
 }

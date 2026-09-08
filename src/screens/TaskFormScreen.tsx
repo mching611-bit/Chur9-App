@@ -13,8 +13,8 @@ import {
   SegmentedControl,
 } from "../components/ui";
 import { colors } from "../theme/colors";
-import { RECURRENCE_RULES, type RecurrenceRule } from "../utils/recurrence";
-import { formatDatePart, formatTimePart, parseDateAndTime } from "../utils/dateInput";
+import { computeFirstDueDate, RECURRENCE_RULES, type RecurrenceRule } from "../utils/recurrence";
+import { formatDatePart, formatTimePart, parseDateAndTime, parseTimeOnly } from "../utils/dateInput";
 import type { AppStackParamList } from "../navigation/types";
 import type { TaskDifficulty, TaskType } from "../types/database";
 
@@ -89,10 +89,27 @@ export default function TaskFormScreen({ navigation, route }: Props) {
       setError("Give the task a title.");
       return;
     }
-    const dueAt = parseDateAndTime(datePart, timePart);
-    if (!dueAt) {
-      setError("Enter a valid due date (YYYY-MM-DD) and time (HH:MM).");
-      return;
+
+    let dueAt: Date | null;
+    if (type === "recurring" && !editing) {
+      // New recurring task: only a time of day was asked for (no date
+      // field shown) — pick the first occurrence of that time per the
+      // recurrence rule, starting from now.
+      const timeOfDay = parseTimeOnly(timePart);
+      dueAt = timeOfDay ? computeFirstDueDate(recurrenceRule, timeOfDay, new Date()) : null;
+      if (!dueAt) {
+        setError("Enter a valid time (HH:MM).");
+        return;
+      }
+    } else {
+      // Custom tasks, and editing an existing recurring instance (whose
+      // calendar date came from the loaded instance, not user input),
+      // still use the full date+time.
+      dueAt = parseDateAndTime(datePart, timePart);
+      if (!dueAt) {
+        setError("Enter a valid due date (YYYY-MM-DD) and time (HH:MM).");
+        return;
+      }
     }
 
     setSaving(true);
@@ -204,24 +221,31 @@ export default function TaskFormScreen({ navigation, route }: Props) {
             </View>
           </View>
 
-          <View style={styles.dateRow}>
-            <View style={{ flex: 1, marginRight: 8 }}>
-              <LabeledInput
-                label="Due date"
-                value={datePart}
-                onChangeText={setDatePart}
-                placeholder="YYYY-MM-DD"
-              />
+          {type === "custom" ? (
+            <View style={styles.dateRow}>
+              <View style={{ flex: 1, marginRight: 8 }}>
+                <LabeledInput
+                  label="Due date"
+                  value={datePart}
+                  onChangeText={setDatePart}
+                  placeholder="YYYY-MM-DD"
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <LabeledInput
+                  label="Due time"
+                  value={timePart}
+                  onChangeText={setTimePart}
+                  placeholder="HH:MM"
+                />
+              </View>
             </View>
-            <View style={{ flex: 1 }}>
-              <LabeledInput
-                label="Due time"
-                value={timePart}
-                onChangeText={setTimePart}
-                placeholder="HH:MM"
-              />
-            </View>
-          </View>
+          ) : (
+            // Recurring tasks are defined by a time of day + a recurrence
+            // pattern, not a calendar date — individual instances are
+            // generated going forward from that (see computeFirstDueDate).
+            <LabeledInput label="Time" value={timePart} onChangeText={setTimePart} placeholder="HH:MM" />
+          )}
 
           <PrimaryButton
             title={editing ? "Save changes" : "Create task"}
