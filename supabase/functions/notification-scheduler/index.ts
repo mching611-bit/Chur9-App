@@ -9,6 +9,12 @@
 //   2. Due sweep — task instances whose `next_notification_at` has passed
 //      get a push (and, once escalated, an opt-in email) sent, a
 //      `notifications` row logged, and their next nag time computed.
+//   3. Heads-up sweep — a single calm reminder 30 minutes before due,
+//      unrelated to Churless level/escalation. Quiet hours suppress a
+//      given occurrence outright (no reschedule) rather than delay it
+//      past the point of being useful. See sweepHeadsUpReminders.
+//   4. Receipts sweep — follows up on tickets from a prior run to confirm
+//      actual delivery, not just Expo accepting the send.
 //
 // Runs with the service role key (bypasses RLS by design — this is the one
 // piece of the system that must see every user's due nags at once).
@@ -27,12 +33,14 @@ import { checkExpoPushReceipts, ExpoPushMessage, sendExpoPushNotifications } fro
 import { sendEmail } from "../_shared/email.ts";
 
 const IGNORED_THRESHOLD_MINUTES = 20; // brief suggests 15-30 min; tune later.
+const HEADS_UP_LEAD_MINUTES = 30; // fixed regardless of Churless level, per the follow-up brief.
 
 interface UserRow {
   id: string;
   email: string;
   push_token: string | null;
   email_opt_in: boolean;
+  heads_up_enabled: boolean;
   quiet_hours_start: string | null;
   quiet_hours_end: string | null;
   timezone: string;
@@ -53,6 +61,12 @@ interface DueInstanceRow {
   tasks: TaskRow;
 }
 
+interface HeadsUpCandidateRow {
+  id: string;
+  due_at: string;
+  tasks: TaskRow;
+}
+
 Deno.serve(async (req) => {
   const cronSecret = Deno.env.get("CRON_SECRET");
   if (cronSecret && req.headers.get("x-cron-secret") !== cronSecret) {
@@ -69,10 +83,12 @@ Deno.serve(async (req) => {
   const now = new Date();
 
   try {
+    const expoAccessToken = Deno.env.get("EXPO_ACCESS_TOKEN") ?? undefined;
     const escalated = await sweepEscalations(supabase, now);
     const sent = await sweepDueNotifications(supabase, now);
-    const receiptsChecked = await sweepReceipts(supabase, now, Deno.env.get("EXPO_ACCESS_TOKEN") ?? undefined);
-    return new Response(JSON.stringify({ ok: true, escalated, sent, receiptsChecked }), {
+    const headsUp = await sweepHeadsUpReminders(supabase, now, expoAccessToken);
+    const receiptsChecked = await sweepReceipts(supabase, now, expoAccessToken);
+    return new Response(JSON.stringify({ ok: true, escalated, sent, headsUp, receiptsChecked }), {
       headers: { "content-type": "application/json" },
     });
   } catch (err) {
@@ -100,7 +116,11 @@ async function sweepEscalations(supabase: SupabaseClient, now: Date): Promise<nu
     // flipped lazily whenever that user's task list loads client-side —
     // unrelated to whether the notification engine should still be
     // nagging about it.)
-    .neq("task_instances.status", "completed");
+    .neq("task_instances.status", "completed")
+    // The pre-due heads-up is deliberately "no escalation, no repeat" —
+    // exclude it here rather than let an unanswered heads-up get treated
+    // as an ignored escalation nag.
+    .eq("kind", "reminder");
 
   if (error) throw new Error(`sweepEscalations select failed: ${error.message}`);
   const rows = (data ?? []) as unknown as Array<{
@@ -198,6 +218,7 @@ async function sweepDueNotifications(supabase: SupabaseClient, now: Date): Promi
       user_id: user.id,
       task_instance_id: instance.id,
       channel: "push",
+      kind: "reminder",
       sent_at: now.toISOString(),
     });
     pushMessages.push({
@@ -223,6 +244,7 @@ async function sweepDueNotifications(supabase: SupabaseClient, now: Date): Promi
         user_id: user.id,
         task_instance_id: instance.id,
         channel: "email",
+        kind: "reminder",
         sent_at: now.toISOString(),
       });
       await sendEmail({
@@ -261,18 +283,137 @@ async function sweepDueNotifications(supabase: SupabaseClient, now: Date): Promi
   }
 
   const tickets = await sendExpoPushNotifications(pushMessages, expoAccessToken);
-  // A ticket is Expo accepting the message into its own queue, not proof
-  // of delivery — stash the ticket id so sweepReceipts can follow up and
-  // find out whether FCM/APNs (and the device) actually got it.
+  await persistExpoTicketIds(supabase, pushMessages, tickets);
+
+  return sentCount;
+}
+
+/**
+ * A ticket is Expo accepting the message into its own queue, not proof of
+ * delivery — stash the ticket id so sweepReceipts can follow up later and
+ * find out whether FCM/APNs (and the device) actually got it. Shared
+ * between sweepDueNotifications and sweepHeadsUpReminders, both of which
+ * send pushes the same way.
+ */
+async function persistExpoTicketIds(
+  supabase: SupabaseClient,
+  pushMessages: ExpoPushMessage[],
+  tickets: Array<{ id?: string } | undefined>
+): Promise<void> {
   for (let i = 0; i < pushMessages.length; i++) {
     const ticket = tickets[i];
     const notificationId = pushMessages[i].data.notificationId as string | undefined;
     if (!ticket?.id || !notificationId) continue;
-    const { error: ticketErr } = await supabase
+    const { error } = await supabase
       .from("notifications")
       .update({ expo_ticket_id: ticket.id })
       .eq("id", notificationId);
-    if (ticketErr) console.error("failed to save expo_ticket_id", notificationId, ticketErr.message);
+    if (error) console.error("failed to save expo_ticket_id", notificationId, error.message);
+  }
+}
+
+/**
+ * A single, calm, non-escalating reminder HEADS_UP_LEAD_MINUTES before a
+ * task's due time — deliberately not part of the Churless-level intensity
+ * system. Fires once per task_instance (heads_up_sent flips true whether
+ * it actually sent or was suppressed by quiet hours) and never touches
+ * notification_count/consecutive_ignored, which is what keeps it out of
+ * the escalation engine's accounting and lets a task completed via this
+ * reminder still qualify for a future "zero post-due nags" points bonus.
+ */
+async function sweepHeadsUpReminders(
+  supabase: SupabaseClient,
+  now: Date,
+  expoAccessToken?: string
+): Promise<number> {
+  // Candidates due soon enough that the heads-up window might already be
+  // open; the exact "is now within [due - 30min, due)" check happens in
+  // JS below per row, since that's a computed comparison Postgres filters
+  // can't express through the query builder here.
+  const horizon = new Date(now.getTime() + HEADS_UP_LEAD_MINUTES * 60_000).toISOString();
+
+  const { data, error } = await supabase
+    .from("task_instances")
+    .select(
+      "id, due_at, tasks!inner(id, title, user_id, users!inner(id, push_token, heads_up_enabled, quiet_hours_start, quiet_hours_end, timezone))"
+    )
+    .neq("status", "completed")
+    .eq("heads_up_sent", false)
+    .gt("due_at", now.toISOString())
+    .lte("due_at", horizon);
+
+  if (error) {
+    console.error("sweepHeadsUpReminders select failed", error.message);
+    return 0;
+  }
+  const candidates = (data ?? []) as unknown as HeadsUpCandidateRow[];
+
+  const pushMessages: ExpoPushMessage[] = [];
+  const notificationInserts: Record<string, unknown>[] = [];
+  const resolvedInstanceIds: string[] = []; // sent OR permanently skipped — either way, done
+  let sentCount = 0;
+
+  for (const candidate of candidates) {
+    const task = candidate.tasks;
+    const user = task.users;
+    if (!user.heads_up_enabled) continue; // leave unresolved: re-checked if they turn it on before due
+
+    const dueAt = new Date(candidate.due_at);
+    const headsUpAt = new Date(dueAt.getTime() - HEADS_UP_LEAD_MINUTES * 60_000);
+    if (headsUpAt.getTime() > now.getTime()) continue; // window not open yet
+
+    const timeZone = user.timezone || "UTC";
+    // Spec: if the ideal 30-minutes-before instant falls inside quiet
+    // hours, skip this occurrence's heads-up entirely — don't reschedule
+    // it, since a heads-up that arrives after (or right at) the due time
+    // defeats its purpose. Checked against headsUpAt itself, not `now`,
+    // so cron timing/jitter can't change the outcome.
+    if (isWithinQuietHours(headsUpAt, timeZone, user.quiet_hours_start, user.quiet_hours_end)) {
+      resolvedInstanceIds.push(candidate.id);
+      continue;
+    }
+
+    if (!user.push_token) continue; // no device yet; leave unresolved, retry later
+
+    const notificationId = crypto.randomUUID();
+    notificationInserts.push({
+      id: notificationId,
+      user_id: user.id,
+      task_instance_id: candidate.id,
+      channel: "push",
+      kind: "heads_up",
+      sent_at: now.toISOString(),
+    });
+    pushMessages.push({
+      to: user.push_token,
+      priority: "high",
+      _contentAvailable: true,
+      data: {
+        notificationId,
+        taskInstanceId: candidate.id,
+        taskId: task.id,
+        title: "Heads up",
+        body: task.title,
+      },
+    });
+    resolvedInstanceIds.push(candidate.id);
+    sentCount++;
+  }
+
+  if (notificationInserts.length > 0) {
+    const { error: insertErr } = await supabase.from("notifications").insert(notificationInserts);
+    if (insertErr) console.error("failed to log heads-up notifications", insertErr.message);
+  }
+
+  const tickets = await sendExpoPushNotifications(pushMessages, expoAccessToken);
+  await persistExpoTicketIds(supabase, pushMessages, tickets);
+
+  if (resolvedInstanceIds.length > 0) {
+    const { error: markErr } = await supabase
+      .from("task_instances")
+      .update({ heads_up_sent: true })
+      .in("id", resolvedInstanceIds);
+    if (markErr) console.error("failed to mark heads_up_sent", markErr.message);
   }
 
   return sentCount;

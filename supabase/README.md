@@ -11,6 +11,13 @@ Run in order against your Supabase project (Dashboard → SQL Editor, or
    adds `quiet_hours_start`/`quiet_hours_end`/`email_opt_in`/`push_token` to
    `users`, plus scheduling state (`next_notification_at`,
    `notification_count`, `consecutive_ignored`) to `task_instances`.
+3. `migrations/0003_push_receipts.sql` — adds `expo_ticket_id`/
+   `receipt_checked_at`/`expo_receipt_error` to `notifications` for
+   delivery-receipt checking (see "Push delivery receipts" below).
+4. `migrations/0004_heads_up_reminder.sql` — M2 follow-up: adds
+   `notifications.kind` ('reminder' | 'heads_up'), `users.heads_up_enabled`,
+   `task_instances.heads_up_sent` for the pre-due heads-up reminder (see
+   "Heads-up reminder" below).
 
 **One addition beyond the M2 brief:** `users.timezone` (default `'UTC'`).
 Quiet hours are wall-clock local time, and there was no timezone column to
@@ -35,9 +42,33 @@ fixed org timezone, or asking the user explicitly).
   Expo-based build order.
 - `supabase/functions/_shared/email.ts` — opt-in email escalation via
   **Postmark** (the M0 account this project uses).
-- `supabase/functions/notification-scheduler/index.ts` — the periodic sweep:
-  marks unanswered nags as timed out (escalation), sends due nags, computes
-  each task instance's next nag time.
+- `supabase/functions/notification-scheduler/index.ts` — the periodic sweep,
+  four passes each run: marks unanswered nags as timed out (escalation),
+  sends due nags and computes each task instance's next nag time, sends the
+  pre-due heads-up reminder, and checks delivery receipts for tickets from a
+  prior run.
+
+### Heads-up reminder
+
+A single, calm reminder `HEADS_UP_LEAD_MINUTES` (30) before a task's due
+time — separate from the Churless-level escalation system entirely:
+`sweepHeadsUpReminders` never touches `notification_count` or
+`consecutive_ignored`, and `sweepEscalations` explicitly excludes
+`kind = 'heads_up'` rows, so an unanswered heads-up just sits there, no
+consequence. `task_instances.heads_up_sent` flips to `true` whether it
+actually sent or was suppressed by quiet hours (checked against the ideal
+30-minutes-before instant itself, not whatever moment the cron sweep
+happens to run at — quiet hours here means "skip this occurrence
+entirely," not "reschedule," since a heads-up arriving after the task is
+already due defeats the point). Toggle is per-user
+(`users.heads_up_enabled`, default on), not per-task.
+
+Because `notification_count` stays untouched, a task finished via this
+reminder (before due, zero post-due nags) is indistinguishable — from the
+scheduler's own bookkeeping — from a task nobody ever had to nag about at
+all. That's deliberate: it's what should make a future points system's
+"zero-nag bonus" apply correctly to a heads-up completion without that
+logic needing to know this reminder exists.
 
 ### Deploying the function
 

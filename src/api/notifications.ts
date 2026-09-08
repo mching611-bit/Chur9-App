@@ -25,6 +25,7 @@ export interface NotificationPreferencesInput {
   quietHoursStart: string | null;
   quietHoursEnd: string | null;
   emailOptIn: boolean;
+  headsUpEnabled: boolean;
 }
 
 export async function fetchNotificationPreferences(): Promise<UserRow> {
@@ -42,6 +43,7 @@ export async function updateNotificationPreferences(input: NotificationPreferenc
       quiet_hours_start: input.quietHoursStart,
       quiet_hours_end: input.quietHoursEnd,
       email_opt_in: input.emailOptIn,
+      heads_up_enabled: input.headsUpEnabled,
     })
     .eq("id", userId);
   if (error) throw new Error(error.message);

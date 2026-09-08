@@ -27,6 +27,11 @@ const EMAIL_OPTIONS = [
   { label: "On", value: "on" as const },
 ];
 
+const HEADS_UP_OPTIONS = [
+  { label: "Off", value: "off" as const },
+  { label: "On", value: "on" as const },
+];
+
 export default function NotificationSettingsScreen({ navigation }: Props) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -35,6 +40,7 @@ export default function NotificationSettingsScreen({ navigation }: Props) {
   const [quietStart, setQuietStart] = useState("");
   const [quietEnd, setQuietEnd] = useState("");
   const [emailOptIn, setEmailOptIn] = useState<"on" | "off">("off");
+  const [headsUpEnabled, setHeadsUpEnabled] = useState<"on" | "off">("on");
   const [pushToken, setPushToken] = useState<string | null>(null);
   const [registeringPush, setRegisteringPush] = useState(false);
 
@@ -45,6 +51,7 @@ export default function NotificationSettingsScreen({ navigation }: Props) {
         setQuietStart(prefs.quiet_hours_start?.slice(0, 5) ?? "");
         setQuietEnd(prefs.quiet_hours_end?.slice(0, 5) ?? "");
         setEmailOptIn(prefs.email_opt_in ? "on" : "off");
+        setHeadsUpEnabled(prefs.heads_up_enabled ? "on" : "off");
         setPushToken(prefs.push_token);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Failed to load notification settings.");
@@ -96,6 +103,7 @@ export default function NotificationSettingsScreen({ navigation }: Props) {
         quietHoursStart: startTrimmed || null,
         quietHoursEnd: endTrimmed || null,
         emailOptIn: emailOptIn === "on",
+        headsUpEnabled: headsUpEnabled === "on",
       });
       navigation.goBack();
     } catch (e) {
@@ -127,6 +135,13 @@ export default function NotificationSettingsScreen({ navigation }: Props) {
             title={pushToken ? "Re-register this device" : "Enable push notifications"}
             onPress={handleEnablePush}
           />
+        </View>
+      </View>
+
+      <View style={{ marginBottom: 14 }}>
+        <MetaText>HEADS-UP REMINDER (30 min before a task is due, once, no repeat)</MetaText>
+        <View style={{ marginTop: 4 }}>
+          <SegmentedControl options={HEADS_UP_OPTIONS} value={headsUpEnabled} onChange={setHeadsUpEnabled} />
         </View>
       </View>
 

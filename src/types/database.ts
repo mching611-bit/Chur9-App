@@ -7,6 +7,7 @@ export type TaskDifficulty = "easy" | "medium" | "hard";
 export type TaskInstanceStatus = "active" | "completed" | "overdue";
 export type NotificationChannel = "push" | "email";
 export type NotificationAction = "done" | "snooze_30" | "snooze_2hr" | "none";
+export type NotificationKind = "reminder" | "heads_up";
 
 export interface UserRow {
   id: string;
@@ -18,6 +19,7 @@ export interface UserRow {
   quiet_hours_start: string | null;
   quiet_hours_end: string | null;
   email_opt_in: boolean;
+  heads_up_enabled: boolean;
   push_token: string | null;
   timezone: string;
 }
@@ -42,6 +44,7 @@ export interface TaskInstanceRow {
   next_notification_at: string | null;
   notification_count: number;
   consecutive_ignored: number;
+  heads_up_sent: boolean;
 }
 
 export interface CalendarEventRow {
@@ -60,6 +63,7 @@ export interface NotificationRow {
   sent_at: string;
   created_at: string;
   channel: NotificationChannel;
+  kind: NotificationKind;
   action_taken: NotificationAction | null;
   responded_at: string | null;
   expo_ticket_id: string | null;
