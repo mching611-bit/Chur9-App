@@ -94,7 +94,13 @@ async function sweepEscalations(supabase: SupabaseClient, now: Date): Promise<nu
     )
     .is("action_taken", null)
     .lt("sent_at", threshold)
-    .eq("task_instances.status", "active");
+    // Not .eq("status", "active") — an overdue instance still needs
+    // escalation just as much as an active one; only "completed" should
+    // stop it. (task_instances.status is M1's due_at-vs-now concept,
+    // flipped lazily whenever that user's task list loads client-side —
+    // unrelated to whether the notification engine should still be
+    // nagging about it.)
+    .neq("task_instances.status", "completed");
 
   if (error) throw new Error(`sweepEscalations select failed: ${error.message}`);
   const rows = (data ?? []) as unknown as Array<{
@@ -139,7 +145,10 @@ async function sweepDueNotifications(supabase: SupabaseClient, now: Date): Promi
     .select(
       "id, notification_count, consecutive_ignored, tasks!inner(id, title, churless_level, user_id, users!inner(id, email, push_token, email_opt_in, quiet_hours_start, quiet_hours_end, timezone))"
     )
-    .eq("status", "active")
+    // Not .eq("status", "active") — see the comment on the same filter in
+    // sweepEscalations above; an overdue instance must keep nagging too,
+    // only a completed one should stop.
+    .neq("status", "completed")
     .not("next_notification_at", "is", null)
     .lte("next_notification_at", now.toISOString());
 
