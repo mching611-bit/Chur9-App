@@ -2,7 +2,9 @@
 // If the schema changes, update this file (or swap in `supabase gen types
 // typescript` output) to keep it in sync.
 
-export type TaskType = "custom" | "recurring";
+// 'calendar' is schema-only until M4 (calendar-sourced tasks opted into
+// Churless treatment) — nothing in the app creates one yet.
+export type TaskType = "custom" | "recurring" | "calendar";
 export type TaskDifficulty = "easy" | "medium" | "hard";
 export type TaskInstanceStatus = "active" | "completed" | "overdue";
 export type NotificationChannel = "push" | "email";
@@ -75,8 +77,14 @@ export interface PointsLedgerRow {
   id: string;
   user_id: string;
   task_instance_id: string | null;
-  points: number;
+  points_awarded: number;
+  base_score: number;
   created_at: string;
+}
+
+export interface RankThresholdRow {
+  rank: string;
+  min_points: number;
 }
 
 // A task joined with the single task_instance the app displays for it.

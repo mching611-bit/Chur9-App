@@ -1,5 +1,6 @@
 import { supabase } from "../lib/supabase";
 import { completeTaskInstance, getCurrentUserId } from "./tasks";
+import { showToast } from "../lib/toast";
 import type { NotificationAction, TaskInstanceRow, TaskRow, UserRow } from "../types/database";
 
 const SNOOZE_MINUTES: Record<"snooze_30" | "snooze_2hr", number> = {
@@ -85,7 +86,13 @@ export async function recordNotificationAction(
       .single();
     if (error || !data?.tasks) throw new Error(error?.message ?? "Task not found.");
     const { tasks, ...instance } = data as unknown as TaskInstanceRow & { tasks: TaskRow };
-    await completeTaskInstance(tasks, instance);
+    const points = await completeTaskInstance(tasks, instance);
+    // Only visible if the app happens to already be running in the
+    // foreground — the Done action itself uses opensAppToForeground: false,
+    // and a fully backgrounded/killed app runs this via the headless
+    // TaskManager task in src/lib/pushNotifications.ts, with no React tree
+    // mounted for the Toast host to reach.
+    showToast(`+${points} pts`);
     return;
   }
 

@@ -18,6 +18,15 @@ Run in order against your Supabase project (Dashboard → SQL Editor, or
    `notifications.kind` ('reminder' | 'heads_up'), `users.heads_up_enabled`,
    `task_instances.heads_up_sent` for the pre-due heads-up reminder (see
    "Heads-up reminder" below).
+5. `migrations/0005_calendar_task_type.sql` — adds `'calendar'` to
+   `task_type`, in its own migration/transaction since Postgres won't let a
+   just-added enum value be referenced by other DDL until it's committed.
+6. `migrations/0006_points_scoring.sql` — M3: populates `points_ledger`
+   (`points_awarded`, `base_score`), adds the fixed `rank_thresholds` table,
+   and wires two triggers — one on `task_instances` that computes and
+   inserts a ledger row when an instance flips to `completed`, one on
+   `points_ledger` that keeps `users.total_points`/`rank` in sync. See
+   "Points/rank scoring (M3)" below.
 
 **One addition beyond the M2 brief:** `users.timezone` (default `'UTC'`).
 Quiet hours are wall-clock local time, and there was no timezone column to
@@ -142,6 +151,49 @@ select cron.schedule(
   $$
 );
 ```
+
+## Points/rank scoring (M3)
+
+Computed entirely server-side (`award_points_on_task_completion` trigger on
+`task_instances`, fires when `status` flips to `completed`) — never on the
+client, since `notification_count` already lives in the DB and points need
+the same tamper-resistance.
+
+Base score by difficulty: easy 20, medium 50, hard 100. For `custom` (and
+`calendar`, once M4 lets a user opt an event into Churless treatment —
+schema-ready via `0005_calendar_task_type.sql` but not reachable from the
+app yet):
+
+```
+points = MAX(
+  base_score - (notification_count * 5) + zero_nag_bonus + honesty_bonus,
+  base_score * 0.3
+)
+```
+
+- `zero_nag_bonus` = `base_score * 0.2` if `notification_count == 0` at
+  completion, else 0. Since the pre-due heads-up reminder never touches
+  `notification_count` (see "Heads-up reminder" above), a task completed
+  from that reminder qualifies automatically — no special-casing needed.
+- `honesty_bonus` = flat `+10` if the task's `churless_level >= 7`,
+  regardless of nag count.
+
+`recurring` tasks skip this formula entirely and just award
+`base_score * 0.5` — flat, no nag penalty/bonus, kept lower-value than
+`custom` on purpose without building streak tracking yet.
+
+A second trigger (`apply_points_ledger_entry`, on `points_ledger` inserts)
+adds the awarded points to `users.total_points` and recomputes
+`users.rank` from the fixed `rank_thresholds` table (Intern 0 → Partner
+60,000). `points_ledger.task_instance_id` is unique, so a completed
+instance can only ever be scored once — closes off a
+reopen-then-re-complete loop (`reopenTaskInstance` in `src/api/tasks.ts`)
+from farming duplicate awards for the same occurrence.
+
+`src/api/tasks.ts`'s `completeTaskInstance` reads the ledger row back after
+the update so both the "Mark complete" button and the notification's Done
+action (`src/api/notifications.ts`) can show a "+N pts" toast
+(`src/components/Toast.tsx`).
 
 ## Client (Expo) setup
 

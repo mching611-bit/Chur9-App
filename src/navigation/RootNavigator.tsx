@@ -7,6 +7,7 @@ import SignUpScreen from "../screens/SignUpScreen";
 import TaskListScreen from "../screens/TaskListScreen";
 import TaskFormScreen from "../screens/TaskFormScreen";
 import NotificationSettingsScreen from "../screens/NotificationSettingsScreen";
+import ProfileScreen from "../screens/ProfileScreen";
 import { ScreenContainer, MetaText } from "../components/ui";
 import { registerForPushNotificationsAsync } from "../lib/pushNotifications";
 import { saveDeviceTimezone } from "../api/notifications";
@@ -43,6 +44,7 @@ function AppNavigator() {
       <AppStack.Screen name="TaskList" component={TaskListScreen} />
       <AppStack.Screen name="TaskForm" component={TaskFormScreen} />
       <AppStack.Screen name="NotificationSettings" component={NotificationSettingsScreen} />
+      <AppStack.Screen name="Profile" component={ProfileScreen} />
     </AppStack.Navigator>
   );
 }

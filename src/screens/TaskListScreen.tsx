@@ -3,6 +3,7 @@ import { Alert, FlatList, Pressable, RefreshControl, StyleSheet, Text, View } fr
 import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { completeTaskInstance, deleteTask, fetchTasksWithInstances, reopenTaskInstance } from "../api/tasks";
+import { showToast } from "../lib/toast";
 import { useAuth } from "../contexts/AuthContext";
 import TaskCard from "../components/TaskCard";
 import { Heading, MetaText, ScreenContainer, SegmentedControl } from "../components/ui";
@@ -49,7 +50,8 @@ export default function TaskListScreen({ navigation }: Props) {
       if (item.instance.status === "completed") {
         await reopenTaskInstance(item.instance.id);
       } else {
-        await completeTaskInstance(item, item.instance);
+        const points = await completeTaskInstance(item, item.instance);
+        showToast(`+${points} pts`);
       }
       load(tab);
     } catch (e) {
@@ -83,6 +85,9 @@ export default function TaskListScreen({ navigation }: Props) {
           <Heading>Your tasks</Heading>
         </View>
         <View style={styles.headerActions}>
+          <Pressable onPress={() => navigation.navigate("Profile")}>
+            <Text style={styles.headerLink}>Profile</Text>
+          </Pressable>
           <Pressable onPress={() => navigation.navigate("NotificationSettings")}>
             <Text style={styles.headerLink}>Notifications</Text>
           </Pressable>

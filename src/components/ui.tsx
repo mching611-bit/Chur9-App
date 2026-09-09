@@ -117,6 +117,15 @@ export function SegmentedControl<T extends string>({
   );
 }
 
+export function ProgressBar({ fraction }: { fraction: number }) {
+  const clamped = Math.min(1, Math.max(0, fraction));
+  return (
+    <View style={styles.progressTrack}>
+      <View style={[styles.progressFill, { width: `${clamped * 100}%` }]} />
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
@@ -216,5 +225,18 @@ const styles = StyleSheet.create({
   segmentTextSelected: {
     color: colors.white,
     fontWeight: "600",
+  },
+  progressTrack: {
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: colors.white,
+    borderWidth: 1,
+    borderColor: colors.border,
+    overflow: "hidden",
+  },
+  progressFill: {
+    height: "100%",
+    backgroundColor: colors.sage,
+    borderRadius: 5,
   },
 });

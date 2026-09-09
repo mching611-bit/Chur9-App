@@ -7,4 +7,5 @@ export type AppStackParamList = {
   TaskList: undefined;
   TaskForm: { taskId: string; instanceId: string } | undefined;
   NotificationSettings: undefined;
+  Profile: undefined;
 };

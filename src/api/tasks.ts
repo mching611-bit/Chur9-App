@@ -147,9 +147,11 @@ export async function deleteTask(taskId: string): Promise<void> {
 /**
  * Marks an instance complete. For a recurring task, also inserts the next
  * upcoming instance (see src/utils/recurrence.ts for the "just one instance
- * ahead" rationale).
+ * ahead" rationale). Points are computed server-side by a trigger on this
+ * same update (see supabase/migrations/0006_points_scoring.sql) — this just
+ * reads back what got awarded so the caller can show it.
  */
-export async function completeTaskInstance(task: TaskRow, instance: TaskInstanceRow): Promise<void> {
+export async function completeTaskInstance(task: TaskRow, instance: TaskInstanceRow): Promise<number> {
   const { error } = await supabase
     .from("task_instances")
     .update({ status: "completed", completed_at: new Date().toISOString() })
@@ -163,6 +165,17 @@ export async function completeTaskInstance(task: TaskRow, instance: TaskInstance
       .insert({ task_id: task.id, due_at: nextDueAt.toISOString(), status: "active" });
     if (nextError) throw new Error(nextError.message);
   }
+
+  const { data: ledgerRow, error: ledgerError } = await supabase
+    .from("points_ledger")
+    .select("points_awarded")
+    .eq("task_instance_id", instance.id)
+    .single();
+  if (ledgerError || !ledgerRow) {
+    console.warn("Failed to read awarded points", ledgerError?.message);
+    return 0;
+  }
+  return ledgerRow.points_awarded as number;
 }
 
 export async function reopenTaskInstance(instanceId: string): Promise<void> {

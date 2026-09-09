@@ -4,10 +4,10 @@ A gamified task manager where a fixed, unranked "Management" nags you via push
 notifications until tasks get done. Complete tasks to climb a corporate rank
 ladder (Intern → Partner).
 
-This is **M1**: the data foundation and basic task CRUD. Push notifications,
-quiet hours, points/rank calculation, calendar sync, and the sign-off
-interaction are not built yet — the schema is shaped so they can attach
-later without a migration (see `supabase/migrations/0001_init_schema.sql`).
+M1 (data foundation/task CRUD), M2 (push notifications, quiet hours,
+escalation), and M3 (points/rank scoring) are built. Calendar sync and the
+sign-off interaction are not yet — the schema is shaped so they can attach
+later without a migration (see `supabase/migrations/`).
 
 ## Stack
 
@@ -69,10 +69,13 @@ src/lib/supabase.ts    Supabase client (session persisted via AsyncStorage)
 src/types/database.ts  Row types mirroring the schema
 src/contexts/          Auth session state
 src/api/tasks.ts        Task/task_instance CRUD + recurrence rollover
+src/api/profile.ts      Reads total_points/rank for the Profile screen
 src/utils/recurrence.ts Next-due-date calculation for recurring tasks
+src/utils/ranks.ts      Rank ladder + progress-to-next-rank (mirrors rank_thresholds)
+src/lib/toast.ts        Cross-cutting "+N pts" toast bus
 src/navigation/         Auth stack vs. app stack, switched on session
-src/screens/            Sign in/up, task list (active/overdue/completed), task form
-src/components/         Shared UI (buttons, inputs, task card)
+src/screens/            Sign in/up, task list, task form, notification settings, profile
+src/components/         Shared UI (buttons, inputs, task card, toast)
 src/theme/              Palette and font choices
 ```
 
@@ -91,3 +94,21 @@ is deferred until the M2 notification engine needs to look further ahead.
 
 Not in M1: push notifications, quiet hours, points/rank calculation,
 calendar sync, the sign-off/signature interaction.
+
+## M3 scope
+
+- Points awarded server-side (Postgres trigger, not the client) when a task
+  is marked complete, per the difficulty base score / nag-penalty / zero-nag
+  and honesty bonuses / floor formula — see "Points/rank scoring (M3)" in
+  `supabase/README.md`.
+- `users.total_points` and `users.rank` kept in sync via a second trigger,
+  rank derived from the fixed `rank_thresholds` table.
+- New Profile screen (`src/screens/ProfileScreen.tsx`, linked from the task
+  list header) showing current rank, total points, and progress to the next
+  rank.
+- "+N pts" toast on completion, from both the "Mark complete" button and the
+  notification's Done action.
+
+Not in M3: streak tracking for recurring tasks (flat half-value score for
+v1 instead), calendar-sourced task scoring (schema-ready via the `calendar`
+task type, gated on the M4 opt-in flow), rank-up celebration/animation.

@@ -5,6 +5,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { AuthProvider } from "./src/contexts/AuthContext";
 import RootNavigator from "./src/navigation/RootNavigator";
+import Toast from "./src/components/Toast";
 import {
   registerBackgroundNotificationTaskAsync,
   registerNotificationCategoriesAsync,
@@ -29,6 +30,7 @@ export default function App() {
       <SafeAreaProvider>
         <AuthProvider>
           <RootNavigator />
+          <Toast />
         </AuthProvider>
         <StatusBar style="auto" />
       </SafeAreaProvider>
