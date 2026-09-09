@@ -21,12 +21,47 @@ Run in order against your Supabase project (Dashboard → SQL Editor, or
 5. `migrations/0005_calendar_task_type.sql` — adds `'calendar'` to
    `task_type`, in its own migration/transaction since Postgres won't let a
    just-added enum value be referenced by other DDL until it's committed.
+   **Must be run as its own SQL Editor execution, separate from 0006** — see
+   the warning below.
 6. `migrations/0006_points_scoring.sql` — M3: populates `points_ledger`
    (`points_awarded`, `base_score`), adds the fixed `rank_thresholds` table,
    and wires two triggers — one on `task_instances` that computes and
    inserts a ledger row when an instance flips to `completed`, one on
    `points_ledger` that keeps `users.total_points`/`rank` in sync. See
    "Points/rank scoring (M3)" below.
+7. `migrations/0007_backfill_missing_points.sql` — one-time, idempotent
+   backfill for any `task_instance` that was already `completed` before
+   0006's trigger was actually installed (see the warning below for how
+   that happens). Safe to run on any environment, including ones that never
+   hit the issue — it's a no-op wherever every completed instance already
+   has a `points_ledger` row.
+
+**0005/0006 must be two separate SQL Editor runs, not one paste.** Pasting
+both into the same "Run" sends them as a single implicit transaction —
+0006 references the `'calendar'` value 0005 just added, which Postgres
+refuses mid-transaction ("unsafe use of new value of enum type added in
+this transaction"), and the failure rolls back *everything* in that paste,
+0005 included. The visible symptom isn't an obvious break: `task_instances`
+updates (status, `completed_at`) keep working fine since they don't touch
+any of this, so tasks appear to complete normally — `points_ledger` just
+silently never gets a row and `users.total_points`/`rank` never move, with
+no client-side error (confirmed via a real incident: a task showed
+`completed_at` set correctly with zero `points_ledger` rows and neither
+trigger present in `pg_trigger`). Check for it with:
+
+```sql
+select tgname, tgenabled from pg_trigger
+where tgname in ('task_instances_award_points', 'points_ledger_apply_to_user');
+```
+
+If that comes back empty, run 0005 and 0006 again as two separate
+executions (both are safe to re-run — see below), then 0007 to backfill
+any completions that happened while the triggers were missing.
+
+Every statement in 0005-0007 is written to be safe to re-run from any
+partial state (`IF EXISTS`/`IF NOT EXISTS` guards, `CREATE OR REPLACE`,
+`ON CONFLICT`) — re-running them is never destructive and always converges
+to the same correct end state, whatever state you're starting from.
 
 **One addition beyond the M2 brief:** `users.timezone` (default `'UTC'`).
 Quiet hours are wall-clock local time, and there was no timezone column to

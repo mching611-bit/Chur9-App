@@ -4,12 +4,19 @@
 -- build brief: notification_count already lives in the DB and is the input
 -- to the nag penalty, so points need the same tamper-resistance rather than
 -- trusting whatever the client posts.
+--
+-- Every statement below is written to be safe to re-run from any partial
+-- state (IF EXISTS/IF NOT EXISTS guards, CREATE OR REPLACE, ON CONFLICT) —
+-- learned the hard way after a combined 0005+0006 paste into the SQL
+-- Editor rolled back as one transaction, silently leaving neither trigger
+-- installed with no error visible client-side. Re-running this file is
+-- always safe, whatever state it's coming from.
 
 -- ---------------------------------------------------------------------------
 -- tasks: let 'calendar' (0005) share custom's recurrence_rule shape
 -- ---------------------------------------------------------------------------
 
-alter table public.tasks drop constraint tasks_recurrence_rule_matches_type;
+alter table public.tasks drop constraint if exists tasks_recurrence_rule_matches_type;
 
 alter table public.tasks add constraint tasks_recurrence_rule_matches_type check (
   (type = 'recurring' and recurrence_rule is not null)
@@ -20,29 +27,45 @@ alter table public.tasks add constraint tasks_recurrence_rule_matches_type check
 -- points_ledger: populate the M1 shell per the M3 data model
 -- ---------------------------------------------------------------------------
 
-alter table public.points_ledger rename column points to points_awarded;
+do $$
+begin
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'points_ledger' and column_name = 'points'
+  ) then
+    alter table public.points_ledger rename column points to points_awarded;
+  end if;
+end $$;
 
-alter table public.points_ledger add column base_score int not null default 0;
+alter table public.points_ledger add column if not exists base_score int not null default 0;
 alter table public.points_ledger alter column base_score drop default;
 
 -- One ledger row per completed instance. Also closes off a reopen ->
 -- re-complete loop (task_instances.status can go completed -> active via
 -- reopenTaskInstance) from farming duplicate awards for the same
 -- occurrence — the trigger below relies on this via ON CONFLICT DO NOTHING.
-alter table public.points_ledger
-  add constraint points_ledger_task_instance_id_key unique (task_instance_id);
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'points_ledger_task_instance_id_key'
+  ) then
+    alter table public.points_ledger
+      add constraint points_ledger_task_instance_id_key unique (task_instance_id);
+  end if;
+end $$;
 
 -- ---------------------------------------------------------------------------
 -- Rank thresholds (fixed table, from the M3 build brief)
 -- ---------------------------------------------------------------------------
 
-create table public.rank_thresholds (
+create table if not exists public.rank_thresholds (
   rank text primary key,
   min_points int not null unique
 );
 
 alter table public.rank_thresholds enable row level security;
 
+drop policy if exists "rank_thresholds_select_all" on public.rank_thresholds;
 create policy "rank_thresholds_select_all" on public.rank_thresholds
   for select using (true);
 
@@ -55,9 +78,10 @@ insert into public.rank_thresholds (rank, min_points) values
   ('Senior Vice President', 7000),
   ('Director', 12000),
   ('Managing Director', 25000),
-  ('Partner', 60000);
+  ('Partner', 60000)
+on conflict (rank) do update set min_points = excluded.min_points;
 
-create function public.rank_for_points(p_points int)
+create or replace function public.rank_for_points(p_points int)
 returns text
 language sql
 stable
@@ -74,7 +98,7 @@ $$;
 -- M3 build brief's.
 -- ---------------------------------------------------------------------------
 
-create function public.award_points_on_task_completion()
+create or replace function public.award_points_on_task_completion()
 returns trigger
 language plpgsql
 security definer set search_path = public
@@ -127,6 +151,7 @@ begin
 end;
 $$;
 
+drop trigger if exists task_instances_award_points on public.task_instances;
 create trigger task_instances_award_points
   after update on public.task_instances
   for each row execute function public.award_points_on_task_completion();
@@ -135,7 +160,7 @@ create trigger task_instances_award_points
 -- users: keep total_points/rank in sync with the ledger
 -- ---------------------------------------------------------------------------
 
-create function public.apply_points_ledger_entry()
+create or replace function public.apply_points_ledger_entry()
 returns trigger
 language plpgsql
 security definer set search_path = public
@@ -156,6 +181,7 @@ begin
 end;
 $$;
 
+drop trigger if exists points_ledger_apply_to_user on public.points_ledger;
 create trigger points_ledger_apply_to_user
   after insert on public.points_ledger
   for each row execute function public.apply_points_ledger_entry();
