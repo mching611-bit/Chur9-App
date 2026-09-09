@@ -4,14 +4,15 @@ import { colors, statusColor } from "../theme/colors";
 import { fonts } from "../theme/typography";
 import type { TaskWithInstance } from "../types/database";
 
-function formatDueAt(iso: string): string {
+function formatDueAt(iso: string | null): string {
+  if (!iso) return "NO DEADLINE";
   const date = new Date(iso);
-  return date.toLocaleString(undefined, {
+  return `DUE ${date.toLocaleString(undefined, {
     month: "short",
     day: "numeric",
     hour: "numeric",
     minute: "2-digit",
-  });
+  })}`;
 }
 
 export default function TaskCard({
@@ -42,7 +43,7 @@ export default function TaskCard({
         <Text style={styles.meta}>
           {task.type === "recurring" ? `RECURRING · ${task.recurrence_rule}` : "ONE-OFF"}
         </Text>
-        <Text style={styles.meta}>DUE {formatDueAt(instance.due_at)}</Text>
+        <Text style={styles.meta}>{formatDueAt(instance.due_at)}</Text>
       </View>
       <View style={styles.metaRow}>
         <Text style={styles.meta}>DIFFICULTY: {task.difficulty.toUpperCase()}</Text>

@@ -34,13 +34,14 @@ export interface TaskRow {
   difficulty: TaskDifficulty;
   churless_level: number;
   recurrence_rule: string | null;
+  has_deadline: boolean;
   created_at: string;
 }
 
 export interface TaskInstanceRow {
   id: string;
   task_id: string;
-  due_at: string;
+  due_at: string | null;
   completed_at: string | null;
   status: TaskInstanceStatus;
   next_notification_at: string | null;

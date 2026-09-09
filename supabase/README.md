@@ -35,6 +35,15 @@ Run in order against your Supabase project (Dashboard → SQL Editor, or
    that happens). Safe to run on any environment, including ones that never
    hit the issue — it's a no-op wherever every completed instance already
    has a `points_ledger` row.
+8. `migrations/0008_no_deadline_tasks.sql` — M3.5: adds `tasks.has_deadline`
+   (custom tasks only — recurring/calendar always `true`) and drops the
+   `not null` constraint on `task_instances.due_at` so a no-deadline custom
+   task can have none. Updates `set_initial_notification_time` to anchor a
+   no-deadline instance's first nag to creation time instead of `due_at`,
+   and `mark_overdue_task_instances` to skip null-`due_at` rows so these
+   never show as `'overdue'`. No scheduler code changes — escalation/quiet
+   hours already key off `next_notification_at`/`notification_count`, not
+   `due_at`.
 
 **0005/0006 must be two separate SQL Editor runs, not one paste.** Pasting
 both into the same "Run" sends them as a single implicit transaction —
@@ -113,6 +122,31 @@ scheduler's own bookkeeping — from a task nobody ever had to nag about at
 all. That's deliberate: it's what should make a future points system's
 "zero-nag bonus" apply correctly to a heads-up completion without that
 logic needing to know this reminder exists.
+
+### No-deadline tasks (M3.5)
+
+Custom (one-off) tasks can opt out of having a due time at all
+(`tasks.has_deadline = false`, `task_instances.due_at = null`) — for
+procrastination-prone tasks where a hard deadline isn't the point.
+Deliberately built as a thin variant of the existing engine rather than a
+separate system:
+
+- `set_initial_notification_time` (in `0008_no_deadline_tasks.sql`) sets a
+  new instance's `next_notification_at` to `due_at`, or `now()` when
+  `due_at` is null — so nagging starts immediately from creation time,
+  through the same `INTERVAL_MINUTES` table keyed by `churless_level`.
+- `mark_overdue_task_instances` skips rows with a null `due_at`, so these
+  never become `'overdue'` — only `'active'` or `'completed'`.
+- Escalation, quiet hours, and send-time learning are all untouched: every
+  bit of that logic (`sweepEscalations`, `sweepDueNotifications`,
+  `isWithinQuietHours`, `computeNextNotificationTime`) keys off
+  `next_notification_at`/`notification_count`/`consecutive_ignored`, never
+  `due_at` directly, so a no-deadline instance escalates exactly like an
+  overdue one once its nag goes unanswered past
+  `IGNORED_THRESHOLD_MINUTES`.
+- The heads-up reminder (above) naturally excludes these — it queries
+  `due_at > now()`, which a null `due_at` never satisfies — since "30
+  minutes before due" is meaningless without a due time.
 
 ### Deploying the function
 
@@ -225,10 +259,15 @@ instance can only ever be scored once — closes off a
 reopen-then-re-complete loop (`reopenTaskInstance` in `src/api/tasks.ts`)
 from farming duplicate awards for the same occurrence.
 
-`src/api/tasks.ts`'s `completeTaskInstance` reads the ledger row back after
-the update so both the "Mark complete" button and the notification's Done
-action (`src/api/notifications.ts`) can show a "+N pts" toast
-(`src/components/Toast.tsx`).
+**UI hidden as of M3.5:** the "Profile" link (points/rank screen) and the
+"+N pts" completion toast are both removed from the app, at the user's
+request, in case this comes back in a future version — the backend above
+(trigger, `points_ledger`, `rank_thresholds`, `users.total_points`/`rank`)
+keeps running exactly as described, just silently. `completeTaskInstance`
+in `src/api/tasks.ts` still reads the ledger row back and returns the
+points awarded; callers (`src/screens/TaskListScreen.tsx`,
+`src/api/notifications.ts`) just no longer toast it. `ProfileScreen` and
+its route are still in the codebase, unreachable from the UI.
 
 ## Client (Expo) setup
 

@@ -73,11 +73,16 @@ export interface CreateTaskInput {
   difficulty: TaskDifficulty;
   churlessLevel: number;
   recurrenceRule: string | null;
-  dueAt: Date;
+  /** Custom tasks only — ignored (always true) for recurring/calendar. */
+  hasDeadline: boolean;
+  /** Null only for a custom task with hasDeadline = false. */
+  dueAt: Date | null;
 }
 
 export async function createTask(input: CreateTaskInput): Promise<TaskWithInstance> {
   const userId = await getCurrentUserId();
+
+  const hasDeadline = input.type === "custom" ? input.hasDeadline : true;
 
   const { data: task, error: taskError } = await supabase
     .from("tasks")
@@ -88,16 +93,20 @@ export async function createTask(input: CreateTaskInput): Promise<TaskWithInstan
       difficulty: input.difficulty,
       churless_level: input.churlessLevel,
       recurrence_rule: input.type === "recurring" ? input.recurrenceRule : null,
+      has_deadline: hasDeadline,
     })
     .select()
     .single();
   if (taskError || !task) throw new Error(taskError?.message ?? "Failed to create task.");
 
   // One instance now; a recurring task's next instance is generated when
-  // this one is completed (see completeTaskInstance below).
+  // this one is completed (see completeTaskInstance below). A no-deadline
+  // custom task gets a null due_at — the initial-notification-time trigger
+  // (see supabase/migrations/0008_no_deadline_tasks.sql) starts its nagging
+  // from creation time instead.
   const { data: instance, error: instanceError } = await supabase
     .from("task_instances")
-    .insert({ task_id: task.id, due_at: input.dueAt.toISOString(), status: "active" })
+    .insert({ task_id: task.id, due_at: input.dueAt ? input.dueAt.toISOString() : null, status: "active" })
     .select()
     .single();
   if (instanceError || !instance) {
@@ -112,7 +121,10 @@ export interface UpdateTaskInput {
   difficulty: TaskDifficulty;
   churlessLevel: number;
   recurrenceRule: string | null;
-  dueAt: Date;
+  /** Custom tasks only — ignored (always true) for recurring/calendar. */
+  hasDeadline: boolean;
+  /** Null only for a custom task with hasDeadline = false. */
+  dueAt: Date | null;
 }
 
 export async function updateTask(
@@ -121,6 +133,8 @@ export async function updateTask(
   input: UpdateTaskInput,
   type: TaskType
 ): Promise<void> {
+  const hasDeadline = type === "custom" ? input.hasDeadline : true;
+
   const { error: taskError } = await supabase
     .from("tasks")
     .update({
@@ -128,13 +142,14 @@ export async function updateTask(
       difficulty: input.difficulty,
       churless_level: input.churlessLevel,
       recurrence_rule: type === "recurring" ? input.recurrenceRule : null,
+      has_deadline: hasDeadline,
     })
     .eq("id", taskId);
   if (taskError) throw new Error(taskError.message);
 
   const { error: instanceError } = await supabase
     .from("task_instances")
-    .update({ due_at: input.dueAt.toISOString() })
+    .update({ due_at: input.dueAt ? input.dueAt.toISOString() : null })
     .eq("id", instanceId);
   if (instanceError) throw new Error(instanceError.message);
 }
@@ -159,7 +174,9 @@ export async function completeTaskInstance(task: TaskRow, instance: TaskInstance
   if (error) throw new Error(error.message);
 
   if (task.type === "recurring" && task.recurrence_rule) {
-    const nextDueAt = computeNextDueDate(task.recurrence_rule, new Date(instance.due_at));
+    // Recurring tasks always have a due_at (only custom tasks can go
+    // no-deadline — see 0008_no_deadline_tasks.sql).
+    const nextDueAt = computeNextDueDate(task.recurrence_rule, new Date(instance.due_at!));
     const { error: nextError } = await supabase
       .from("task_instances")
       .insert({ task_id: task.id, due_at: nextDueAt.toISOString(), status: "active" });

@@ -35,6 +35,11 @@ const RECURRENCE_OPTIONS: { label: string; value: RecurrenceRule }[] = RECURRENC
   (rule) => ({ label: rule[0].toUpperCase() + rule.slice(1), value: rule })
 );
 
+const HAS_DEADLINE_OPTIONS: { label: string; value: "yes" | "no" }[] = [
+  { label: "Yes", value: "yes" },
+  { label: "No", value: "no" },
+];
+
 function defaultDueDate(): Date {
   const d = new Date();
   d.setDate(d.getDate() + 1);
@@ -55,6 +60,7 @@ export default function TaskFormScreen({ navigation, route }: Props) {
   const [difficulty, setDifficulty] = useState<TaskDifficulty>("medium");
   const [churlessLevel, setChurlessLevel] = useState(3);
   const [recurrenceRule, setRecurrenceRule] = useState<RecurrenceRule>("daily");
+  const [hasDeadline, setHasDeadline] = useState(true);
   const [datePart, setDatePart] = useState(formatDatePart(defaultDueDate()));
   const [timePart, setTimePart] = useState(formatTimePart(defaultDueDate()));
 
@@ -68,9 +74,12 @@ export default function TaskFormScreen({ navigation, route }: Props) {
         setDifficulty(task.difficulty);
         setChurlessLevel(task.churless_level);
         if (task.recurrence_rule) setRecurrenceRule(task.recurrence_rule as RecurrenceRule);
-        const due = new Date(task.instance.due_at);
-        setDatePart(formatDatePart(due));
-        setTimePart(formatTimePart(due));
+        setHasDeadline(task.has_deadline);
+        if (task.instance.due_at) {
+          const due = new Date(task.instance.due_at);
+          setDatePart(formatDatePart(due));
+          setTimePart(formatTimePart(due));
+        }
       } catch (e) {
         setError(e instanceof Error ? e.message : "Failed to load task.");
       } finally {
@@ -91,7 +100,12 @@ export default function TaskFormScreen({ navigation, route }: Props) {
     }
 
     let dueAt: Date | null;
-    if (type === "recurring" && !editing) {
+    if (type === "custom" && !hasDeadline) {
+      // No-deadline custom task: nagging starts from creation time instead
+      // (see supabase/migrations/0008_no_deadline_tasks.sql), so there's no
+      // due date/time to collect at all.
+      dueAt = null;
+    } else if (type === "recurring" && !editing) {
       // New recurring task: only a time of day was asked for (no date
       // field shown) — pick the first occurrence of that time per the
       // recurrence rule, starting from now.
@@ -102,9 +116,9 @@ export default function TaskFormScreen({ navigation, route }: Props) {
         return;
       }
     } else {
-      // Custom tasks, and editing an existing recurring instance (whose
-      // calendar date came from the loaded instance, not user input),
-      // still use the full date+time.
+      // Custom tasks with a deadline, and editing an existing recurring
+      // instance (whose calendar date came from the loaded instance, not
+      // user input), still use the full date+time.
       dueAt = parseDateAndTime(datePart, timePart);
       if (!dueAt) {
         setError("Enter a valid due date (YYYY-MM-DD) and time (HH:MM).");
@@ -118,7 +132,7 @@ export default function TaskFormScreen({ navigation, route }: Props) {
         await updateTask(
           taskId,
           instanceId,
-          { title, difficulty, churlessLevel, recurrenceRule, dueAt },
+          { title, difficulty, churlessLevel, recurrenceRule, hasDeadline, dueAt },
           type
         );
       } else {
@@ -128,6 +142,7 @@ export default function TaskFormScreen({ navigation, route }: Props) {
           difficulty,
           churlessLevel,
           recurrenceRule: type === "recurring" ? recurrenceRule : null,
+          hasDeadline,
           dueAt,
         });
       }
@@ -221,25 +236,40 @@ export default function TaskFormScreen({ navigation, route }: Props) {
             </View>
           </View>
 
-          {type === "custom" ? (
-            <View style={styles.dateRow}>
-              <View style={{ flex: 1, marginRight: 8 }}>
-                <LabeledInput
-                  label="Due date"
-                  value={datePart}
-                  onChangeText={setDatePart}
-                  placeholder="YYYY-MM-DD"
-                />
-              </View>
-              <View style={{ flex: 1 }}>
-                <LabeledInput
-                  label="Due time"
-                  value={timePart}
-                  onChangeText={setTimePart}
-                  placeholder="HH:MM"
+          {type === "custom" && (
+            <View style={{ marginBottom: 14 }}>
+              <MetaText>HAS A HARD DEADLINE?</MetaText>
+              <View style={{ marginTop: 4 }}>
+                <SegmentedControl
+                  options={HAS_DEADLINE_OPTIONS}
+                  value={hasDeadline ? "yes" : "no"}
+                  onChange={(value) => setHasDeadline(value === "yes")}
                 />
               </View>
             </View>
+          )}
+
+          {type === "custom" ? (
+            hasDeadline && (
+              <View style={styles.dateRow}>
+                <View style={{ flex: 1, marginRight: 8 }}>
+                  <LabeledInput
+                    label="Due date"
+                    value={datePart}
+                    onChangeText={setDatePart}
+                    placeholder="YYYY-MM-DD"
+                  />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <LabeledInput
+                    label="Due time"
+                    value={timePart}
+                    onChangeText={setTimePart}
+                    placeholder="HH:MM"
+                  />
+                </View>
+              </View>
+            )
           ) : (
             // Recurring tasks are defined by a time of day + a recurrence
             // pattern, not a calendar date — individual instances are
