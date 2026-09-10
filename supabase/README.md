@@ -52,6 +52,10 @@ Run in order against your Supabase project (Dashboard → SQL Editor, or
    the client; `upsert_calendar_connection`, `replace_busy_blocks` for the
    sync job/OAuth callback, both service-role-only). See "Calendar
    suppression (M4)" below.
+10. `migrations/0010_fix_calendar_connection_token_refresh.sql` — fixes a
+    bug in 0009's `upsert_calendar_connection` that broke every token
+    refresh. See "Known issue: token refresh failing with a not-null
+    violation" under "Calendar suppression (M4)" below.
 
 **0005/0006 must be two separate SQL Editor runs, not one paste.** Pasting
 both into the same "Run" sends them as a single implicit transaction —
@@ -345,6 +349,34 @@ any authenticated user, scoped to `auth.uid()`; `upsert_calendar_connection`,
 Postgres functions are public-executable by default). `busy_blocks` is
 never read by the client at all — the build brief is explicit that no
 calendar data ever surfaces in the app UI.
+
+### Known issue: token refresh failing with a not-null violation
+
+Fixed in `migrations/0010_fix_calendar_connection_token_refresh.sql` — if
+you deployed before that migration existed, run it. Symptom: every token
+refresh (`calendar-sync`'s `refreshAndPersist`, `googleCalendar.ts`) fails
+in the Edge Function logs with
+`Failed to persist refreshed token: null value in column refresh_token of
+relation calendar_connections violates not-null constraint`, even though
+`refresh_token` is genuinely optional on a refresh call (Google only
+reissues one on the original consent, not on every access-token refresh —
+`upsert_calendar_connection` is supposed to keep the existing stored value
+via `coalesce(...)` when the caller passes `null`).
+
+Root cause: 0009's `upsert_calendar_connection` was a single
+`insert ... on conflict (...) do update set refresh_token = coalesce(...)`
+statement. That looks like it should work, but doesn't — Postgres checks
+NOT NULL constraints against the proposed row during the speculative
+insert attempt itself, *before* it discovers a conflict and would fall
+through to the `do update` branch. A `null` in the `values(...)` tuple
+trips the constraint right there, so the `coalesce(...)` in the `set`
+clause never even runs; this hit on *every* refresh, not just some. 0010
+replaces it with the classic explicit-`update`-first,
+`insert`-only-if-not-found upsert idiom instead (wrapped for
+`unique_violation` to stay race-safe against two overlapping
+`calendar-sync` runs) — the `update` path never constructs a row with a
+null `refresh_token` in the first place, so the constraint never comes
+into play there at all.
 
 ### Deploying the functions
 
