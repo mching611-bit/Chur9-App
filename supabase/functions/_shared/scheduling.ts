@@ -169,6 +169,15 @@ export function isWithinQuietHours(
   return cur >= startMin || cur < endMin;
 }
 
+/** Used whenever a reschedule can't determine a real window end (see below). */
+export const DEFAULT_WINDOW_FALLBACK_MS = 12 * 3600 * 1000;
+
+/** A random instant in [windowStart, windowEnd) — the shared "pick a random send time in an open window" primitive behind both quiet-hours and busy-block rescheduling. */
+export function randomTimeInWindow(windowStart: Date, windowEnd: Date, minSpanMs = 5 * 60_000): Date {
+  const spanMs = Math.max(windowEnd.getTime() - windowStart.getTime(), minSpanMs);
+  return new Date(windowStart.getTime() + Math.random() * spanMs);
+}
+
 /**
  * Given `blockedAt` (a candidate send time that landed inside quiet hours),
  * returns a random instant in the next open window — not simply the moment
@@ -184,9 +193,55 @@ export function rescheduleOutsideQuietHours(
   const windowStart = nextOccurrenceOfLocalTime(blockedAt, timeZone, quietEnd) ?? blockedAt;
   const windowEnd =
     nextOccurrenceOfLocalTime(windowStart, timeZone, quietStart, 1) ??
-    new Date(windowStart.getTime() + 12 * 3600 * 1000);
-  const spanMs = Math.max(windowEnd.getTime() - windowStart.getTime(), 5 * 60_000);
-  return new Date(windowStart.getTime() + Math.random() * spanMs);
+    new Date(windowStart.getTime() + DEFAULT_WINDOW_FALLBACK_MS);
+  return randomTimeInWindow(windowStart, windowEnd);
+}
+
+// ---------------------------------------------------------------------------
+// Busy-block (calendar suppression, M4) rescheduling — same "random point in
+// the next open window" pattern as quiet hours above, just bounded by the
+// user's synced busy_blocks cache instead of a fixed daily window. Kept
+// here (not in the calendar-sync/notification-scheduler functions) since
+// this half of the logic is pure interval math with no DB/Deno dependency,
+// same as the rest of this module.
+// ---------------------------------------------------------------------------
+
+export interface BusyInterval {
+  start: Date;
+  end: Date;
+}
+
+/** Merges overlapping/back-to-back intervals; returns them sorted by start. */
+function mergeIntervals(intervals: BusyInterval[]): BusyInterval[] {
+  const sorted = [...intervals].sort((a, b) => a.start.getTime() - b.start.getTime());
+  const merged: BusyInterval[] = [];
+  for (const interval of sorted) {
+    const last = merged[merged.length - 1];
+    if (last && interval.start.getTime() <= last.end.getTime()) {
+      if (interval.end.getTime() > last.end.getTime()) last.end = interval.end;
+    } else {
+      merged.push({ start: interval.start, end: interval.end });
+    }
+  }
+  return merged;
+}
+
+/**
+ * If `at` falls inside one of the user's synced busy blocks, returns a
+ * random instant in the next open window after it (bounded by the next
+ * busy block, or DEFAULT_WINDOW_FALLBACK_MS if none is cached that far
+ * ahead — the sync job only caches a ~48h horizon, so "no next block found"
+ * is a normal case here, not just a defensive fallback like in the quiet
+ * hours version above). Returns null if `at` isn't inside any block.
+ */
+export function rescheduleOutsideBusyBlock(at: Date, blocks: BusyInterval[]): Date | null {
+  const merged = mergeIntervals(blocks);
+  const covering = merged.find((b) => at.getTime() >= b.start.getTime() && at.getTime() < b.end.getTime());
+  if (!covering) return null;
+  const windowStart = covering.end;
+  const next = merged.find((b) => b.start.getTime() > windowStart.getTime());
+  const windowEnd = next ? next.start : new Date(windowStart.getTime() + DEFAULT_WINDOW_FALLBACK_MS);
+  return randomTimeInWindow(windowStart, windowEnd);
 }
 
 // ---------------------------------------------------------------------------

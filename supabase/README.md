@@ -44,6 +44,14 @@ Run in order against your Supabase project (Dashboard → SQL Editor, or
    never show as `'overdue'`. No scheduler code changes — escalation/quiet
    hours already key off `next_notification_at`/`notification_count`, not
    `due_at`.
+9. `migrations/0009_calendar_connections.sql` — M4: adds
+   `calendar_connections` (OAuth tokens, one row per user+provider) and
+   `busy_blocks` (the sync job's cache, safe to fully rebuild), plus the
+   security-definer functions that are the only way either table is ever
+   touched (`get_calendar_connections`, `disconnect_calendar_connection` for
+   the client; `upsert_calendar_connection`, `replace_busy_blocks` for the
+   sync job/OAuth callback, both service-role-only). See "Calendar
+   suppression (M4)" below.
 
 **0005/0006 must be two separate SQL Editor runs, not one paste.** Pasting
 both into the same "Run" sends them as a single implicit transaction —
@@ -221,6 +229,176 @@ select cron.schedule(
 );
 ```
 
+## Calendar suppression (M4)
+
+Suppression only — mutes nags during a detected busy block on a connected
+calendar. No event-surfacing, no event-to-task conversion; both are
+explicitly out of scope this milestone per the product simplification that
+also dropped points/rank in M3.5. Google only this milestone; Outlook is
+deferred (a persistent Microsoft Entra account-provisioning error blocked
+completing that app registration), not cancelled — the schema and adapter
+interface are provider-agnostic so it's a second adapter later, not a
+rework.
+
+### How it fits together
+
+Two-part system, same reason M2's notification-scheduler is split from the
+scheduling logic it calls: no live provider API call ever happens in the
+notification-firing critical path.
+
+- `supabase/functions/calendar-sync/index.ts` — the sync job (own cron
+  entry, same pattern as notification-scheduler). Every 15-30 min, for each
+  connected calendar, calls the provider's free/busy endpoint over a
+  48-hour window and fully replaces that user's `busy_blocks` cache (all
+  providers merged into one list — `busy_blocks` has no `provider` column
+  on purpose, since the scheduler only ever needs "is the user busy right
+  now from *any* connected calendar").
+- `supabase/functions/_shared/calendarProviders.ts` — the provider-agnostic
+  adapter interface (`BusyBlockFetcher`) the sync job dispatches through.
+  Adding Outlook later means writing `getOutlookBusyBlocks()` in a sibling
+  module to `googleCalendar.ts` and adding one entry to
+  `getBusyBlockFetcher()` — the sync job's orchestration loop doesn't
+  change.
+- `supabase/functions/_shared/googleCalendar.ts` — the Google adapter:
+  calls `freebusy.query` with the `calendar.freebusy` scope, refreshing the
+  access token first if it's near expiry and once more (defensively) if a
+  live call comes back 401 on an apparently-still-valid token.
+- `supabase/functions/notification-scheduler/index.ts` — unchanged in
+  shape, one addition to `sweepDueNotifications`: right alongside the
+  existing quiet-hours check, it now also reads the cached `busy_blocks`
+  for the current moment (never a live call) and, if busy, reschedules
+  using the same "random point in the next open window" primitive quiet
+  hours already uses (`randomTimeInWindow` in `_shared/scheduling.ts`,
+  factored out of `rescheduleOutsideQuietHours` so both call sites are
+  genuinely sharing code, not just pattern-alike). See
+  `rescheduleOutsideBusyBlock` for the busy-block-specific window lookup
+  (merges overlapping/back-to-back blocks, bounds the window by the next
+  synced block or a 12h fallback if none is cached that far ahead).
+- Scoped to the main nag/reschedule flow only (`sweepDueNotifications`),
+  not the pre-due heads-up reminder (`sweepHeadsUpReminders`) — the brief's
+  exit criteria and its "reuse the reschedule function" phrasing both point
+  at the reschedule pattern specifically, and heads-up already has its own
+  different quiet-hours behavior (skip entirely, never reschedule) that a
+  busy-block reschedule wouldn't fit cleanly into. Worth revisiting if a
+  future brief asks for it explicitly.
+
+### OAuth flow
+
+The Google OAuth client here is a **Web application** type — it has a
+client secret, which Google only allows redirecting to an `https` URL, not
+a mobile app's own custom scheme. So the flow has a server-side hop in the
+middle, all within Supabase Edge Functions, and the app never sees the
+client secret or the authorization code:
+
+1. App calls `google-oauth-start` (deployed **with** JWT verification — the
+   Supabase client attaches the signed-in user's session automatically).
+   It verifies the caller via `supabase.auth.getUser()`, signs a short-lived
+   `state` (HMAC'd with `SUPABASE_SERVICE_ROLE_KEY` — already a secret every
+   function has, so no new secret to provision just for this), and returns
+   the Google consent URL.
+2. App opens that URL via `WebBrowser.openAuthSessionAsync` (see
+   `src/lib/calendarAuth.ts`), watching for a redirect back to the app's own
+   `chur9://google-oauth-callback` (see `app.json`'s `scheme` — this
+   requires a dev-client or standalone build; like push notifications,
+   Expo Go can't be given a stable custom-scheme redirect).
+3. Google redirects the browser to `google-oauth-callback` (deployed
+   **without** JWT verification — Google's redirect carries no Supabase
+   session, so the platform gateway's JWT check would reject every call
+   here; `state` is what authenticates the request instead). It verifies
+   `state`, exchanges the code for tokens server-side, upserts
+   `calendar_connections` via the service-role-only
+   `upsert_calendar_connection` RPC, then 302s the browser to
+   `chur9://google-oauth-callback?ok=1` — the redirect
+   `WebBrowser.openAuthSessionAsync` was watching for, which closes the
+   auth session and returns control to the app.
+4. The app re-reads connection status from `get_calendar_connections()`
+   rather than trusting anything in that redirect's query string — the DB
+   is the source of truth for whether a connection now exists.
+
+**Redirect URI**: `<SUPABASE_URL>/functions/v1/google-oauth-callback` —
+built from the `SUPABASE_URL` every Edge Function already has, so it's
+always byte-identical to what `google-oauth-start` sends Google and what's
+registered in Google Cloud Console, no separate value to keep in sync. This
+is the same path as the placeholder already configured there
+(`https://hegrzqyyxukqrdfjxdgs.supabase.co/functions/v1/google-oauth-callback`)
+— confirmed, no change needed on the Google Cloud Console side.
+
+Disconnecting doesn't need an Edge Function — the client calls
+`disconnect_calendar_connection(provider)` directly, a security-definer SQL
+function keyed off `auth.uid()`.
+
+### Token storage and access control
+
+`calendar_connections.access_token`/`refresh_token` are meaningfully more
+sensitive than anything else this app stores (compare `users.push_token`,
+which is a device identifier, not a live credential to someone's calendar).
+Rather than column-level encryption-at-rest (Supabase Vault/pgsodium would
+be the next step if that's needed), this milestone protects them with
+access control: RLS is enabled on both `calendar_connections` and
+`busy_blocks` with **no policies at all** for `anon`/`authenticated` — only
+`service_role` (which bypasses RLS by design) can touch these tables
+directly. The client's entire read/write surface is the four
+security-definer functions in `0009_calendar_connections.sql`
+(`get_calendar_connections`, `disconnect_calendar_connection` — callable by
+any authenticated user, scoped to `auth.uid()`; `upsert_calendar_connection`,
+`replace_busy_blocks` — `service_role` only, explicit `revoke`/`grant` since
+Postgres functions are public-executable by default). `busy_blocks` is
+never read by the client at all — the build brief is explicit that no
+calendar data ever surfaces in the app UI.
+
+### Deploying the functions
+
+```
+supabase functions deploy calendar-sync --no-verify-jwt
+supabase functions deploy google-oauth-start
+supabase functions deploy google-oauth-callback --no-verify-jwt
+```
+
+`calendar-sync` needs `--no-verify-jwt` for the same reason
+`notification-scheduler` does (a cron trigger has no logged-in user; see
+above). `google-oauth-callback` needs it because Google's redirect carries
+no Supabase session. `google-oauth-start` is the one function in this
+project that keeps the platform's default JWT check — it's meant to be
+called by a signed-in user and nothing else.
+
+Set these secrets (in addition to the M2 ones above):
+
+```
+supabase secrets set GOOGLE_CLIENT_ID=<from Google Cloud Console>
+supabase secrets set GOOGLE_CLIENT_SECRET=<from Google Cloud Console>
+```
+
+`SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY` are
+injected automatically, same as for `notification-scheduler`.
+
+### Wiring the schedule
+
+Same pattern as `notification-scheduler`'s "Wiring the schedule" above —
+**Supabase Dashboard → Cron Jobs**, or the equivalent `pg_cron`/`pg_net`
+SQL:
+
+1. **Name**: `chur9-calendar-sync`.
+2. **Schedule**: e.g. `*/20 * * * *` (every 20 minutes — brief suggests
+   15-30 min).
+3. **Type**: HTTP Request, **Method**: `POST`.
+4. **URL**: `https://<project-ref>.supabase.co/functions/v1/calendar-sync`.
+5. **HTTP Headers**: `x-cron-secret: <same value as the CRON_SECRET secret>`
+   (reuses the same secret notification-scheduler checks — both functions
+   read the same env var).
+6. **HTTP Body**: `{}`.
+
+### Verifying suppression (same method as M2's quiet hours)
+
+Connect Google Calendar from Notification Settings, create a calendar event
+covering the current time on the connected calendar, and schedule (or wait
+for) a task nag to fall inside it. Confirm: `calendar-sync` populates
+`busy_blocks` for that window within one sync interval;
+`notification-scheduler` doesn't send the push while `now` is inside a
+synced block; `task_instances.next_notification_at` moves to a random
+instant after the block's `end_time` (or the start of the next synced
+block, if there is one before it); the nag actually fires there on a later
+sweep.
+
 ## Points/rank scoring (M3)
 
 Computed entirely server-side (`award_points_on_task_completion` trigger on
@@ -229,9 +407,11 @@ client, since `notification_count` already lives in the DB and points need
 the same tamper-resistance.
 
 Base score by difficulty: easy 20, medium 50, hard 100. For `custom` (and
-`calendar`, once M4 lets a user opt an event into Churless treatment —
-schema-ready via `0005_calendar_task_type.sql` but not reachable from the
-app yet):
+`calendar`, once some future milestone lets a user opt an event into
+Churless treatment — schema-ready via `0005_calendar_task_type.sql` but
+still not reachable from the app; M4 turned out to be suppression-only, see
+"Calendar suppression (M4)" above, with event-to-task conversion dropped
+per the product simplification that also shelved points/rank in M3.5):
 
 ```
 points = MAX(
@@ -310,6 +490,12 @@ still needed from your side:
    an actual remote push round-trip.
 4. **Postmark Server API Token + verified sender** (see above) for the email
    escalation channel.
+5. **A development build for Google Calendar connect too**, same
+   requirement and reason as #3 above: the OAuth redirect needs the app's
+   own stable `chur9://` scheme (`app.json`'s `scheme`), which Expo Go can't
+   provide (`expo-linking`'s `createURL` docs are explicit that its output
+   "is neither stable nor predictable" there). If you already have a dev
+   client from #3, no separate build is needed — this reuses it.
 
 ## Design notes / assumptions worth double-checking
 

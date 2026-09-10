@@ -26,9 +26,11 @@ import {
   isWithinQuietHours,
   localHour,
   MIN_SAMPLES_PER_BUCKET,
+  rescheduleOutsideBusyBlock,
   rescheduleOutsideQuietHours,
   shouldEscalateToEmail,
 } from "../_shared/scheduling.ts";
+import type { BusyInterval } from "../_shared/scheduling.ts";
 import { checkExpoPushReceipts, ExpoPushMessage, sendExpoPushNotifications } from "../_shared/expoPush.ts";
 import { sendEmail } from "../_shared/email.ts";
 
@@ -198,6 +200,23 @@ async function sweepDueNotifications(supabase: SupabaseClient, now: Date): Promi
       await supabase
         .from("task_instances")
         .update({ next_notification_at: rescheduled.toISOString() })
+        .eq("id", instance.id);
+      continue;
+    }
+
+    // M4 calendar suppression — same "random point in the next open window"
+    // reschedule pattern as quiet hours above, just bounded by the user's
+    // synced busy_blocks cache (from either connected provider) instead of
+    // a fixed daily window. See rescheduleOutsideBusyBlock in
+    // _shared/scheduling.ts. Reads only the cache — never calls Google (or,
+    // later, Microsoft) directly, so this stays out of any live API call in
+    // the notification-firing critical path.
+    const busyBlocks = await fetchUpcomingBusyBlocks(supabase, user.id, now);
+    const rescheduledPastBusyBlock = rescheduleOutsideBusyBlock(now, busyBlocks);
+    if (rescheduledPastBusyBlock) {
+      await supabase
+        .from("task_instances")
+        .update({ next_notification_at: rescheduledPastBusyBlock.toISOString() })
         .eq("id", instance.id);
       continue;
     }
@@ -520,4 +539,26 @@ async function computeAvgResponseByHour(
     }
   }
   return result;
+}
+
+const BUSY_BLOCK_FETCH_LIMIT = 50; // bounded — calendar-sync only caches a ~48h horizon per user
+
+/** This user's cached busy_blocks (from any connected provider) at/after `now` — the only calendar data the scheduler ever reads; never a live provider call. */
+async function fetchUpcomingBusyBlocks(supabase: SupabaseClient, userId: string, now: Date): Promise<BusyInterval[]> {
+  const { data, error } = await supabase
+    .from("busy_blocks")
+    .select("start_time, end_time")
+    .eq("user_id", userId)
+    .gt("end_time", now.toISOString())
+    .order("start_time", { ascending: true })
+    .limit(BUSY_BLOCK_FETCH_LIMIT);
+
+  if (error) {
+    console.error("fetchUpcomingBusyBlocks failed", userId, error.message);
+    return [];
+  }
+  return (data ?? []).map((row: { start_time: string; end_time: string }) => ({
+    start: new Date(row.start_time),
+    end: new Date(row.end_time),
+  }));
 }

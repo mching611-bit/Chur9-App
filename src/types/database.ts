@@ -10,6 +10,7 @@ export type TaskInstanceStatus = "active" | "completed" | "overdue";
 export type NotificationChannel = "push" | "email";
 export type NotificationAction = "done" | "snooze_30" | "snooze_2hr" | "none";
 export type NotificationKind = "reminder" | "heads_up";
+export type CalendarProvider = "google" | "outlook";
 
 export interface UserRow {
   id: string;
@@ -86,6 +87,15 @@ export interface PointsLedgerRow {
 export interface RankThresholdRow {
   rank: string;
   min_points: number;
+}
+
+// Returned by the get_calendar_connections() RPC — status only, never the
+// access/refresh tokens (those never leave the backend; see
+// supabase/migrations/0009_calendar_connections.sql).
+export interface CalendarConnectionStatus {
+  provider: CalendarProvider;
+  connected_at: string;
+  expires_at: string;
 }
 
 // A task joined with the single task_instance the app displays for it.

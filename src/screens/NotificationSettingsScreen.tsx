@@ -6,6 +6,8 @@ import {
   updateNotificationPreferences,
 } from "../api/notifications";
 import { registerForPushNotificationsAsync } from "../lib/pushNotifications";
+import { disconnectCalendar, fetchCalendarConnections } from "../api/calendar";
+import { connectGoogleCalendar } from "../lib/calendarAuth";
 import {
   ErrorText,
   Heading,
@@ -17,6 +19,7 @@ import {
   SegmentedControl,
 } from "../components/ui";
 import type { AppStackParamList } from "../navigation/types";
+import type { CalendarConnectionStatus } from "../types/database";
 
 type Props = NativeStackScreenProps<AppStackParamList, "NotificationSettings">;
 
@@ -44,6 +47,18 @@ export default function NotificationSettingsScreen({ navigation }: Props) {
   const [pushToken, setPushToken] = useState<string | null>(null);
   const [registeringPush, setRegisteringPush] = useState(false);
 
+  const [calendarConnections, setCalendarConnections] = useState<CalendarConnectionStatus[]>([]);
+  const [calendarError, setCalendarError] = useState<string | null>(null);
+  const [connectingCalendar, setConnectingCalendar] = useState(false);
+
+  const loadCalendarConnections = async () => {
+    try {
+      setCalendarConnections(await fetchCalendarConnections());
+    } catch (e) {
+      setCalendarError(e instanceof Error ? e.message : "Failed to load calendar connections.");
+    }
+  };
+
   useEffect(() => {
     (async () => {
       try {
@@ -59,7 +74,41 @@ export default function NotificationSettingsScreen({ navigation }: Props) {
         setLoading(false);
       }
     })();
+    loadCalendarConnections();
   }, []);
+
+  const googleConnection = calendarConnections.find((c) => c.provider === "google");
+
+  const handleConnectGoogleCalendar = async () => {
+    setCalendarError(null);
+    setConnectingCalendar(true);
+    try {
+      const result = await connectGoogleCalendar();
+      // The DB, not this result, is the source of truth for whether a
+      // connection now exists — re-fetch either way rather than trusting
+      // result.ok alone.
+      await loadCalendarConnections();
+      if (!result.ok) {
+        setCalendarError(
+          result.error === "cancel" ? "Cancelled." : `Couldn't connect Google Calendar (${result.error}).`
+        );
+      }
+    } catch (e) {
+      setCalendarError(e instanceof Error ? e.message : "Something went wrong.");
+    } finally {
+      setConnectingCalendar(false);
+    }
+  };
+
+  const handleDisconnectGoogleCalendar = async () => {
+    setCalendarError(null);
+    try {
+      await disconnectCalendar("google");
+      await loadCalendarConnections();
+    } catch (e) {
+      setCalendarError(e instanceof Error ? e.message : "Failed to disconnect.");
+    }
+  };
 
   const handleEnablePush = async () => {
     setRegisteringPush(true);
@@ -164,6 +213,23 @@ export default function NotificationSettingsScreen({ navigation }: Props) {
         </View>
       </View>
       <MetaText>Nags due during this window get pushed to a random time after it ends.</MetaText>
+
+      <View style={{ marginTop: 14, marginBottom: 14 }}>
+        <MetaText>CALENDAR (mutes nags during a busy block on a connected calendar)</MetaText>
+        <ErrorText>{calendarError}</ErrorText>
+        <View style={{ marginTop: 6 }}>
+          <MetaText>{googleConnection ? "Google Calendar connected." : "Google Calendar not connected."}</MetaText>
+          <SecondaryButton
+            title={googleConnection ? "Disconnect Google Calendar" : "Connect Google Calendar"}
+            onPress={googleConnection ? handleDisconnectGoogleCalendar : handleConnectGoogleCalendar}
+            disabled={connectingCalendar}
+          />
+        </View>
+        {/* Outlook is deferred (see supabase/README.md "Calendar suppression
+            (M4)") — a second "Connect Outlook Calendar" button goes here
+            once that provider's adapter exists; nothing else in this screen
+            needs to change. */}
+      </View>
 
       <View style={{ marginTop: 14, marginBottom: 14 }}>
         <MetaText>EMAIL BACKUP (sent once a nag goes unanswered)</MetaText>

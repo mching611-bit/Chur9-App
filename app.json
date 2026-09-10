@@ -3,6 +3,7 @@
     "name": "Chur9-App",
     "slug": "Chur9-App",
     "version": "1.0.0",
+    "scheme": "chur9",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
