@@ -16,7 +16,8 @@ export interface CalendarConnectionRow {
 }
 
 const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
-const FREEBUSY_ENDPOINT = "https://www.googleapis.com/calendar/v3/freebusy";
+// Case-sensitive on Google's side — "freebusy" (all lowercase) 404s.
+const FREEBUSY_ENDPOINT = "https://www.googleapis.com/calendar/v3/freeBusy";
 const REFRESH_BUFFER_MS = 5 * 60_000; // refresh a bit before actual expiry, not exactly at it
 
 function needsRefresh(expiresAt: string): boolean {
