@@ -143,26 +143,35 @@ async function sweepEscalations(supabase: SupabaseClient, now: Date): Promise<nu
   }>;
 
   for (const row of rows) {
-    const ti = row.task_instances;
-    const nextConsecutiveIgnored = ti.consecutive_ignored + 1;
-    const exhausted = hasExhaustedReminders(ti.tasks.churless_level, ti.notification_count);
+    // Same isolation as sweepDueNotifications below, for the same reason:
+    // this runs first in the same request, and an uncaught exception on
+    // one row here previously aborted the whole handler — including
+    // sweepDueNotifications, which would then never run at all — before
+    // anything about the failure got attributed to a specific row.
+    try {
+      const ti = row.task_instances;
+      const nextConsecutiveIgnored = ti.consecutive_ignored + 1;
+      const exhausted = hasExhaustedReminders(ti.tasks.churless_level, ti.notification_count);
 
-    const { error: notifErr } = await supabase
-      .from("notifications")
-      .update({ action_taken: "none" })
-      .eq("id", row.id);
-    if (notifErr) console.error("failed to mark notification timed out", row.id, notifErr.message);
+      const { error: notifErr } = await supabase
+        .from("notifications")
+        .update({ action_taken: "none" })
+        .eq("id", row.id);
+      if (notifErr) console.error("failed to mark notification timed out", row.id, notifErr.message);
 
-    const { error: tiErr } = await supabase
-      .from("task_instances")
-      .update({
-        consecutive_ignored: nextConsecutiveIgnored,
-        // Bring the next nag forward immediately unless this level has no
-        // reminders left to give (level 1/2 already sent its budget).
-        ...(exhausted ? {} : { next_notification_at: now.toISOString() }),
-      })
-      .eq("id", row.task_instance_id);
-    if (tiErr) console.error("failed to bump escalation", row.task_instance_id, tiErr.message);
+      const { error: tiErr } = await supabase
+        .from("task_instances")
+        .update({
+          consecutive_ignored: nextConsecutiveIgnored,
+          // Bring the next nag forward immediately unless this level has no
+          // reminders left to give (level 1/2 already sent its budget).
+          ...(exhausted ? {} : { next_notification_at: now.toISOString() }),
+        })
+        .eq("id", row.task_instance_id);
+      if (tiErr) console.error("failed to bump escalation", row.task_instance_id, tiErr.message);
+    } catch (err) {
+      console.error("sweepEscalations failed for notification", row.id, err);
+    }
   }
 
   return rows.length;
