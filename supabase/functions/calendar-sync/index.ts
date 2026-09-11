@@ -11,6 +11,7 @@
 import { createClient, SupabaseClient } from "npm:@supabase/supabase-js@2";
 import type { BusyInterval } from "../_shared/scheduling.ts";
 import { getBusyBlockFetcher, type CalendarConnectionRow } from "../_shared/calendarProviders.ts";
+import { fetchWithTimeout } from "../_shared/fetchWithTimeout.ts";
 
 const SYNC_WINDOW_HOURS = 48; // brief suggests 24-48h; using the wider end since sync only runs every 15-30 min
 
@@ -30,7 +31,12 @@ Deno.serve(async (req) => {
   if (!googleClientId || !googleClientSecret) {
     return new Response("Missing GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET", { status: 500 });
   }
-  const supabase = createClient(supabaseUrl, serviceRoleKey);
+  // global.fetch: without this, a stalled call to Supabase's own API (not
+  // just Google's) can hang this function forever too — see
+  // _shared/fetchWithTimeout.ts.
+  const supabase = createClient(supabaseUrl, serviceRoleKey, {
+    global: { fetch: fetchWithTimeout },
+  });
 
   const now = new Date();
   const windowStart = now;

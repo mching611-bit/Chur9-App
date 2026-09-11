@@ -5,6 +5,7 @@
 
 import { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import type { BusyInterval } from "./scheduling.ts";
+import { fetchWithTimeout } from "./fetchWithTimeout.ts";
 
 export interface CalendarConnectionRow {
   id: string;
@@ -29,7 +30,7 @@ async function refreshAccessToken(
   clientId: string,
   clientSecret: string
 ): Promise<{ accessToken: string; expiresAt: string }> {
-  const res = await fetch(TOKEN_ENDPOINT, {
+  const res = await fetchWithTimeout(TOKEN_ENDPOINT, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -72,7 +73,7 @@ async function refreshAndPersist(
 }
 
 async function queryFreeBusy(accessToken: string, windowStart: Date, windowEnd: Date): Promise<Response> {
-  return fetch(FREEBUSY_ENDPOINT, {
+  return fetchWithTimeout(FREEBUSY_ENDPOINT, {
     method: "POST",
     headers: {
       authorization: `Bearer ${accessToken}`,

@@ -378,6 +378,33 @@ replaces it with the classic explicit-`update`-first,
 null `refresh_token` in the first place, so the constraint never comes
 into play there at all.
 
+### Known issue: calendar-sync hanging with no response
+
+Fixed by adding `_shared/fetchWithTimeout.ts` and using it for every
+outbound network call `calendar-sync` makes — both the raw `fetch()` calls
+in `googleCalendar.ts` (token refresh, `freeBusy` query) and the Supabase
+client itself (`createClient(..., { global: { fetch: fetchWithTimeout } })`
+in `calendar-sync/index.ts`). Symptom: invoking `calendar-sync` accepts the
+request and then never responds — no error, no timeout, just hangs.
+
+Root cause: none of these calls had a deadline. `Deno.serve`'s handler
+`await`s its way through `syncAllConnections` → `getGoogleBusyBlocks` →
+a plain `fetch()` to Google's token or `freeBusy` endpoint (or, one layer
+out, to Supabase's own API via the untimed `createClient`). If any one of
+those stalls at the network layer — no response, no error, just silence,
+which real external hosts do sometimes — the awaited promise never
+settles, so nothing downstream ever runs and `Deno.serve` never produces a
+`Response`. There was no missing `await` or unhandled-rejection bug (every
+promise in this call chain was already correctly awaited, and each user's
+work in `syncAllConnections`'s loop is individually try/caught) — the gap
+was purely the lack of any timeout to force a stalled call to eventually
+fail instead of hanging forever. `fetchWithTimeout` defaults to a 10s
+deadline per call via `AbortSignal.timeout()`; a stalled call now rejects
+and is caught by the existing per-user try/catch (`usersFailed++`) instead
+of blocking the whole sweep. `notification-scheduler/index.ts` has the
+same untimed-`createClient` gap and hasn't been touched here — worth
+applying the same fix there if it ever shows the same symptom.
+
 ### Deploying the functions
 
 ```
