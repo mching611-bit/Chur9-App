@@ -88,11 +88,14 @@ async function syncAllConnections(
         blocks.push(...(await fetchBusyBlocks(supabase, connection, windowStart, windowEnd)));
       }
 
+      console.log(`calendar-sync: user ${userId} — ${blocks.length} busy block(s) fetched`);
+
       const { error: replaceError } = await supabase.rpc("replace_busy_blocks", {
         p_user_id: userId,
         p_blocks: blocks.map((b) => ({ start_time: b.start.toISOString(), end_time: b.end.toISOString() })),
       });
       if (replaceError) throw new Error(replaceError.message);
+      console.log(`calendar-sync: user ${userId} — busy_blocks replaced successfully`);
       usersSynced++;
     } catch (err) {
       console.error("calendar-sync failed for user", userId, err);
