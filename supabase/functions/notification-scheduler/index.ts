@@ -33,6 +33,7 @@ import {
 import type { BusyInterval } from "../_shared/scheduling.ts";
 import { checkExpoPushReceipts, ExpoPushMessage, sendExpoPushNotifications } from "../_shared/expoPush.ts";
 import { sendEmail } from "../_shared/email.ts";
+import { fetchWithTimeout } from "../_shared/fetchWithTimeout.ts";
 
 const IGNORED_THRESHOLD_MINUTES = 20; // brief suggests 15-30 min; tune later.
 const HEADS_UP_LEAD_MINUTES = 30; // fixed regardless of Churless level, per the follow-up brief.
@@ -80,7 +81,13 @@ Deno.serve(async (req) => {
   if (!supabaseUrl || !serviceRoleKey) {
     return new Response("Missing SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY", { status: 500 });
   }
-  const supabase = createClient(supabaseUrl, serviceRoleKey);
+  // global.fetch: a stalled call to Supabase's own API (this client had no
+  // timeout at all until now) can hang the whole sweep forever with zero
+  // error logged — see _shared/fetchWithTimeout.ts and the calendar-sync
+  // fix this mirrors.
+  const supabase = createClient(supabaseUrl, serviceRoleKey, {
+    global: { fetch: fetchWithTimeout },
+  });
 
   const now = new Date();
 
@@ -186,117 +193,144 @@ async function sweepDueNotifications(supabase: SupabaseClient, now: Date): Promi
   let sentCount = 0;
 
   for (const instance of dueInstances) {
-    const task = instance.tasks;
-    const user = task.users;
-    const timeZone = user.timezone || "UTC";
+    // Each instance isolated: one row throwing (a malformed timezone, a
+    // dropped connection, anything) must not silently abort every other
+    // due instance in this sweep along with it. Previously the whole loop
+    // ran unguarded and a single exception here would propagate out to the
+    // top-level handler, failing the entire sweep with no indication of
+    // which row caused it.
+    try {
+      const task = instance.tasks;
+      const user = task.users;
+      const timeZone = user.timezone || "UTC";
 
-    if (isWithinQuietHours(now, timeZone, user.quiet_hours_start, user.quiet_hours_end)) {
-      const rescheduled = rescheduleOutsideQuietHours(
-        now,
-        timeZone,
-        user.quiet_hours_start!,
-        user.quiet_hours_end!
-      );
-      await supabase
-        .from("task_instances")
-        .update({ next_notification_at: rescheduled.toISOString() })
-        .eq("id", instance.id);
-      continue;
-    }
+      if (isWithinQuietHours(now, timeZone, user.quiet_hours_start, user.quiet_hours_end)) {
+        const rescheduled = rescheduleOutsideQuietHours(
+          now,
+          timeZone,
+          user.quiet_hours_start!,
+          user.quiet_hours_end!
+        );
+        const { error: quietHoursUpdateErr } = await supabase
+          .from("task_instances")
+          .update({ next_notification_at: rescheduled.toISOString() })
+          .eq("id", instance.id);
+        if (quietHoursUpdateErr) {
+          console.error("failed to reschedule past quiet hours", instance.id, quietHoursUpdateErr.message);
+        }
+        continue;
+      }
 
-    // M4 calendar suppression — same "random point in the next open window"
-    // reschedule pattern as quiet hours above, just bounded by the user's
-    // synced busy_blocks cache (from either connected provider) instead of
-    // a fixed daily window. See rescheduleOutsideBusyBlock in
-    // _shared/scheduling.ts. Reads only the cache — never calls Google (or,
-    // later, Microsoft) directly, so this stays out of any live API call in
-    // the notification-firing critical path.
-    const busyBlocks = await fetchUpcomingBusyBlocks(supabase, user.id, now);
-    const rescheduledPastBusyBlock = rescheduleOutsideBusyBlock(now, busyBlocks);
-    if (rescheduledPastBusyBlock) {
-      await supabase
-        .from("task_instances")
-        .update({ next_notification_at: rescheduledPastBusyBlock.toISOString() })
-        .eq("id", instance.id);
-      continue;
-    }
+      // M4 calendar suppression — same "random point in the next open window"
+      // reschedule pattern as quiet hours above, just bounded by the user's
+      // synced busy_blocks cache (from either connected provider) instead of
+      // a fixed daily window. See rescheduleOutsideBusyBlock in
+      // _shared/scheduling.ts. Reads only the cache — never calls Google (or,
+      // later, Microsoft) directly, so this stays out of any live API call in
+      // the notification-firing critical path.
+      const busyBlocks = await fetchUpcomingBusyBlocks(supabase, user.id, now);
+      const rescheduledPastBusyBlock = rescheduleOutsideBusyBlock(now, busyBlocks);
+      if (rescheduledPastBusyBlock) {
+        const { error: busyBlockUpdateErr } = await supabase
+          .from("task_instances")
+          .update({ next_notification_at: rescheduledPastBusyBlock.toISOString() })
+          .eq("id", instance.id);
+        if (busyBlockUpdateErr) {
+          console.error("failed to reschedule past busy block", instance.id, busyBlockUpdateErr.message);
+        }
+        continue;
+      }
 
-    if (!user.push_token) {
-      // Nothing to send yet (device not registered) — leave
-      // next_notification_at untouched so this instance is simply
-      // re-checked next sweep rather than burning a "reminder" that never
-      // reached anyone.
-      console.log(
-        `sweepDueNotifications: user ${user.id} instance ${instance.id} — no push_token, leaving next_notification_at unchanged`
-      );
-      continue;
-    }
+      if (!user.push_token) {
+        // Nothing to send yet (device not registered) — leave
+        // next_notification_at untouched so this instance is simply
+        // re-checked next sweep rather than burning a "reminder" that never
+        // reached anyone.
+        console.log(
+          `sweepDueNotifications: user ${user.id} instance ${instance.id} — no push_token, leaving next_notification_at unchanged`
+        );
+        continue;
+      }
 
-    const escalateToEmail = shouldEscalateToEmail(instance.consecutive_ignored) && user.email_opt_in;
+      const escalateToEmail = shouldEscalateToEmail(instance.consecutive_ignored) && user.email_opt_in;
 
-    const notificationId = crypto.randomUUID();
-    notificationInserts.push({
-      id: notificationId,
-      user_id: user.id,
-      task_instance_id: instance.id,
-      channel: "push",
-      kind: "reminder",
-      sent_at: now.toISOString(),
-    });
-    pushMessages.push({
-      to: user.push_token,
-      priority: "high",
-      _contentAvailable: true,
-      // No top-level title/body — see the comment on ExpoPushMessage in
-      // _shared/expoPush.ts for why. The client builds the actual
-      // notification from these fields itself.
-      data: {
-        notificationId,
-        taskInstanceId: instance.id,
-        taskId: task.id,
-        title: "Chur9",
-        body: task.title,
-      },
-    });
-    sentCount++;
-
-    if (escalateToEmail && postmarkServerToken && postmarkFrom) {
+      const notificationId = crypto.randomUUID();
       notificationInserts.push({
-        id: crypto.randomUUID(),
+        id: notificationId,
         user_id: user.id,
         task_instance_id: instance.id,
-        channel: "email",
+        channel: "push",
         kind: "reminder",
         sent_at: now.toISOString(),
       });
-      await sendEmail({
-        to: user.email,
-        from: postmarkFrom,
-        serverToken: postmarkServerToken,
-        subject: `Still outstanding: ${task.title}`,
-        text: `You haven't responded to a reminder for "${task.title}". Open Chur9 to mark it done or snooze it.`,
+      pushMessages.push({
+        to: user.push_token,
+        priority: "high",
+        _contentAvailable: true,
+        // No top-level title/body — see the comment on ExpoPushMessage in
+        // _shared/expoPush.ts for why. The client builds the actual
+        // notification from these fields itself.
+        data: {
+          notificationId,
+          taskInstanceId: instance.id,
+          taskId: task.id,
+          title: "Chur9",
+          body: task.title,
+        },
       });
+      sentCount++;
+
+      if (escalateToEmail && postmarkServerToken && postmarkFrom) {
+        notificationInserts.push({
+          id: crypto.randomUUID(),
+          user_id: user.id,
+          task_instance_id: instance.id,
+          channel: "email",
+          kind: "reminder",
+          sent_at: now.toISOString(),
+        });
+        await sendEmail({
+          to: user.email,
+          from: postmarkFrom,
+          serverToken: postmarkServerToken,
+          subject: `Still outstanding: ${task.title}`,
+          text: `You haven't responded to a reminder for "${task.title}". Open Chur9 to mark it done or snooze it.`,
+        });
+      }
+
+      const avgResponseMinutesByHour = await computeAvgResponseByHour(supabase, user.id, timeZone);
+      const next = computeNextNotificationTime({
+        churlessLevel: task.churless_level,
+        notificationCount: instance.notification_count + 1,
+        consecutiveIgnored: instance.consecutive_ignored,
+        now,
+        timeZone,
+        quietHoursStart: user.quiet_hours_start,
+        quietHoursEnd: user.quiet_hours_end,
+        avgResponseMinutesByHour,
+      });
+
+      const { error: sentUpdateErr } = await supabase
+        .from("task_instances")
+        .update({
+          notification_count: instance.notification_count + 1,
+          next_notification_at: next ? next.toISOString() : null,
+        })
+        .eq("id", instance.id);
+      if (sentUpdateErr) {
+        // The push was already queued above (sentCount/pushMessages) even
+        // though this bookkeeping update failed — flagging loudly since a
+        // push may go out with the DB never reflecting it, which looks
+        // from the row alone like nothing happened at all.
+        console.error(
+          "sent a push but failed to update notification_count/next_notification_at",
+          instance.id,
+          sentUpdateErr.message
+        );
+      }
+    } catch (err) {
+      console.error("sweepDueNotifications failed for instance", instance.id, err);
     }
-
-    const avgResponseMinutesByHour = await computeAvgResponseByHour(supabase, user.id, timeZone);
-    const next = computeNextNotificationTime({
-      churlessLevel: task.churless_level,
-      notificationCount: instance.notification_count + 1,
-      consecutiveIgnored: instance.consecutive_ignored,
-      now,
-      timeZone,
-      quietHoursStart: user.quiet_hours_start,
-      quietHoursEnd: user.quiet_hours_end,
-      avgResponseMinutesByHour,
-    });
-
-    await supabase
-      .from("task_instances")
-      .update({
-        notification_count: instance.notification_count + 1,
-        next_notification_at: next ? next.toISOString() : null,
-      })
-      .eq("id", instance.id);
   }
 
   if (notificationInserts.length > 0) {
