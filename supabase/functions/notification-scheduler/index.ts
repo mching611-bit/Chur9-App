@@ -226,6 +226,9 @@ async function sweepDueNotifications(supabase: SupabaseClient, now: Date): Promi
       // next_notification_at untouched so this instance is simply
       // re-checked next sweep rather than burning a "reminder" that never
       // reached anyone.
+      console.log(
+        `sweepDueNotifications: user ${user.id} instance ${instance.id} — no push_token, leaving next_notification_at unchanged`
+      );
       continue;
     }
 
