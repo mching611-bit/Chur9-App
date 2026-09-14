@@ -70,6 +70,16 @@ interface HeadsUpCandidateRow {
   tasks: TaskRow;
 }
 
+interface EscalationNotificationRow {
+  id: string;
+  task_instance_id: string;
+  task_instances: {
+    notification_count: number;
+    consecutive_ignored: number;
+    tasks: { churless_level: number };
+  };
+}
+
 Deno.serve(async (req) => {
   const cronSecret = Deno.env.get("CRON_SECRET");
   if (cronSecret && req.headers.get("x-cron-secret") !== cronSecret) {
@@ -112,35 +122,38 @@ Deno.serve(async (req) => {
 async function sweepEscalations(supabase: SupabaseClient, now: Date): Promise<number> {
   const threshold = new Date(now.getTime() - IGNORED_THRESHOLD_MINUTES * 60_000).toISOString();
 
-  const { data, error } = await supabase
-    .from("notifications")
-    .select(
-      "id, task_instance_id, task_instances!inner(id, status, notification_count, consecutive_ignored, tasks!inner(churless_level))"
-    )
-    .is("action_taken", null)
-    .lt("sent_at", threshold)
-    // Not .eq("status", "active") — an overdue instance still needs
-    // escalation just as much as an active one; only "completed" should
-    // stop it. (task_instances.status is M1's due_at-vs-now concept,
-    // flipped lazily whenever that user's task list loads client-side —
-    // unrelated to whether the notification engine should still be
-    // nagging about it.)
-    .neq("task_instances.status", "completed")
-    // The pre-due heads-up is deliberately "no escalation, no repeat" —
-    // exclude it here rather than let an unanswered heads-up get treated
-    // as an ignored escalation nag.
-    .eq("kind", "reminder");
-
-  if (error) throw new Error(`sweepEscalations select failed: ${error.message}`);
-  const rows = (data ?? []) as unknown as Array<{
-    id: string;
-    task_instance_id: string;
-    task_instances: {
-      notification_count: number;
-      consecutive_ignored: number;
-      tasks: { churless_level: number };
-    };
-  }>;
+  // The initial select gets its own try/catch, isolated from
+  // sweepDueNotifications (called right after this in the same request): a
+  // transient DB error here — a Gateway Timeout has happened in practice —
+  // previously threw straight out to the top-level handler and aborted the
+  // whole invocation, meaning sweepDueNotifications never even started.
+  // Logging and returning 0 here lets that sweep still get its turn.
+  let rows: EscalationNotificationRow[];
+  try {
+    const { data, error } = await supabase
+      .from("notifications")
+      .select(
+        "id, task_instance_id, task_instances!inner(id, status, notification_count, consecutive_ignored, tasks!inner(churless_level))"
+      )
+      .is("action_taken", null)
+      .lt("sent_at", threshold)
+      // Not .eq("status", "active") — an overdue instance still needs
+      // escalation just as much as an active one; only "completed" should
+      // stop it. (task_instances.status is M1's due_at-vs-now concept,
+      // flipped lazily whenever that user's task list loads client-side —
+      // unrelated to whether the notification engine should still be
+      // nagging about it.)
+      .neq("task_instances.status", "completed")
+      // The pre-due heads-up is deliberately "no escalation, no repeat" —
+      // exclude it here rather than let an unanswered heads-up get treated
+      // as an ignored escalation nag.
+      .eq("kind", "reminder");
+    if (error) throw new Error(error.message);
+    rows = (data ?? []) as unknown as EscalationNotificationRow[];
+  } catch (err) {
+    console.error("sweepEscalations: initial select failed, skipping this sweep", err);
+    return 0;
+  }
 
   for (const row of rows) {
     // Same isolation as sweepDueNotifications below, for the same reason:
@@ -180,29 +193,40 @@ async function sweepEscalations(supabase: SupabaseClient, now: Date): Promise<nu
 const DUE_INSTANCE_BATCH_LIMIT = 200; // bounded — an unbounded, unordered sweep can let a backlog starve specific rows indefinitely if a run hits the platform's execution time limit mid-loop
 
 async function sweepDueNotifications(supabase: SupabaseClient, now: Date): Promise<number> {
-  const { data, error } = await supabase
-    .from("task_instances")
-    .select(
-      "id, notification_count, consecutive_ignored, tasks!inner(id, title, churless_level, user_id, users!inner(id, email, push_token, email_opt_in, quiet_hours_start, quiet_hours_end, timezone))"
-    )
-    // Not .eq("status", "active") — see the comment on the same filter in
-    // sweepEscalations above; an overdue instance must keep nagging too,
-    // only a completed one should stop.
-    .neq("status", "completed")
-    .not("next_notification_at", "is", null)
-    .lte("next_notification_at", now.toISOString())
-    // Most-overdue first, and bounded — without this, an unordered,
-    // unbounded result set means a large backlog can starve whichever rows
-    // happen to sort late, sweep after sweep, especially if a run's total
-    // duration is ever long enough to hit the platform's own execution
-    // time limit mid-loop (which kills the isolate outright, not via a
-    // catchable JS exception — none of this file's try/catch blocks can
-    // see that happen).
-    .order("next_notification_at", { ascending: true })
-    .limit(DUE_INSTANCE_BATCH_LIMIT);
-
-  if (error) throw new Error(`sweepDueNotifications select failed: ${error.message}`);
-  const dueInstances = (data ?? []) as unknown as DueInstanceRow[];
+  // Same isolation as sweepEscalations' initial select above, and for the
+  // same reason: this runs second in the same request, and a transient DB
+  // error here shouldn't be able to take down the whole invocation either
+  // — though at this point sweepEscalations has already had its turn
+  // regardless, isolating this one still protects sweepHeadsUpReminders
+  // and sweepReceipts (called after this) from an error here.
+  let dueInstances: DueInstanceRow[];
+  try {
+    const { data, error } = await supabase
+      .from("task_instances")
+      .select(
+        "id, notification_count, consecutive_ignored, tasks!inner(id, title, churless_level, user_id, users!inner(id, email, push_token, email_opt_in, quiet_hours_start, quiet_hours_end, timezone))"
+      )
+      // Not .eq("status", "active") — see the comment on the same filter in
+      // sweepEscalations above; an overdue instance must keep nagging too,
+      // only a completed one should stop.
+      .neq("status", "completed")
+      .not("next_notification_at", "is", null)
+      .lte("next_notification_at", now.toISOString())
+      // Most-overdue first, and bounded — without this, an unordered,
+      // unbounded result set means a large backlog can starve whichever rows
+      // happen to sort late, sweep after sweep, especially if a run's total
+      // duration is ever long enough to hit the platform's own execution
+      // time limit mid-loop (which kills the isolate outright, not via a
+      // catchable JS exception — none of this file's try/catch blocks can
+      // see that happen).
+      .order("next_notification_at", { ascending: true })
+      .limit(DUE_INSTANCE_BATCH_LIMIT);
+    if (error) throw new Error(error.message);
+    dueInstances = (data ?? []) as unknown as DueInstanceRow[];
+  } catch (err) {
+    console.error("sweepDueNotifications: initial select failed, skipping this sweep", err);
+    return 0;
+  }
   console.log(`sweepDueNotifications: ${dueInstances.length} due instance(s) this sweep`);
 
   const expoAccessToken = Deno.env.get("EXPO_ACCESS_TOKEN") ?? undefined;
