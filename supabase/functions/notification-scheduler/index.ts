@@ -262,6 +262,10 @@ async function sweepDueNotifications(supabase: SupabaseClient, now: Date): Promi
           .eq("id", instance.id);
         if (quietHoursUpdateErr) {
           console.error("failed to reschedule past quiet hours", instance.id, quietHoursUpdateErr.message);
+        } else {
+          console.log(
+            `sweepDueNotifications: instance ${instance.id} — quiet hours suppressed, rescheduled to ${rescheduled.toISOString()}`
+          );
         }
         continue;
       }
@@ -282,6 +286,10 @@ async function sweepDueNotifications(supabase: SupabaseClient, now: Date): Promi
           .eq("id", instance.id);
         if (busyBlockUpdateErr) {
           console.error("failed to reschedule past busy block", instance.id, busyBlockUpdateErr.message);
+        } else {
+          console.log(
+            `sweepDueNotifications: instance ${instance.id} — busy block suppressed, rescheduled to ${rescheduledPastBusyBlock.toISOString()}`
+          );
         }
         continue;
       }
