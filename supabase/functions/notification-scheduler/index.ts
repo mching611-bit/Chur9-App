@@ -177,6 +177,8 @@ async function sweepEscalations(supabase: SupabaseClient, now: Date): Promise<nu
   return rows.length;
 }
 
+const DUE_INSTANCE_BATCH_LIMIT = 200; // bounded — an unbounded, unordered sweep can let a backlog starve specific rows indefinitely if a run hits the platform's execution time limit mid-loop
+
 async function sweepDueNotifications(supabase: SupabaseClient, now: Date): Promise<number> {
   const { data, error } = await supabase
     .from("task_instances")
@@ -188,10 +190,20 @@ async function sweepDueNotifications(supabase: SupabaseClient, now: Date): Promi
     // only a completed one should stop.
     .neq("status", "completed")
     .not("next_notification_at", "is", null)
-    .lte("next_notification_at", now.toISOString());
+    .lte("next_notification_at", now.toISOString())
+    // Most-overdue first, and bounded — without this, an unordered,
+    // unbounded result set means a large backlog can starve whichever rows
+    // happen to sort late, sweep after sweep, especially if a run's total
+    // duration is ever long enough to hit the platform's own execution
+    // time limit mid-loop (which kills the isolate outright, not via a
+    // catchable JS exception — none of this file's try/catch blocks can
+    // see that happen).
+    .order("next_notification_at", { ascending: true })
+    .limit(DUE_INSTANCE_BATCH_LIMIT);
 
   if (error) throw new Error(`sweepDueNotifications select failed: ${error.message}`);
   const dueInstances = (data ?? []) as unknown as DueInstanceRow[];
+  console.log(`sweepDueNotifications: ${dueInstances.length} due instance(s) this sweep`);
 
   const expoAccessToken = Deno.env.get("EXPO_ACCESS_TOKEN") ?? undefined;
   const postmarkServerToken = Deno.env.get("POSTMARK_SERVER_TOKEN");
