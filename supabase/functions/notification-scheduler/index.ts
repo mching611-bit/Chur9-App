@@ -467,50 +467,58 @@ async function sweepHeadsUpReminders(
   let sentCount = 0;
 
   for (const candidate of candidates) {
-    const task = candidate.tasks;
-    const user = task.users;
-    if (!user.heads_up_enabled) continue; // leave unresolved: re-checked if they turn it on before due
+    // Same isolation as sweepEscalations/sweepDueNotifications: this calls
+    // isWithinQuietHours below, the exact call whose RangeError (on a
+    // malformed timezone) previously crashed a whole sweep for every row,
+    // not just the one with the bad data.
+    try {
+      const task = candidate.tasks;
+      const user = task.users;
+      if (!user.heads_up_enabled) continue; // leave unresolved: re-checked if they turn it on before due
 
-    const dueAt = new Date(candidate.due_at);
-    const headsUpAt = new Date(dueAt.getTime() - HEADS_UP_LEAD_MINUTES * 60_000);
-    if (headsUpAt.getTime() > now.getTime()) continue; // window not open yet
+      const dueAt = new Date(candidate.due_at);
+      const headsUpAt = new Date(dueAt.getTime() - HEADS_UP_LEAD_MINUTES * 60_000);
+      if (headsUpAt.getTime() > now.getTime()) continue; // window not open yet
 
-    const timeZone = user.timezone || "UTC";
-    // Spec: if the ideal 30-minutes-before instant falls inside quiet
-    // hours, skip this occurrence's heads-up entirely — don't reschedule
-    // it, since a heads-up that arrives after (or right at) the due time
-    // defeats its purpose. Checked against headsUpAt itself, not `now`,
-    // so cron timing/jitter can't change the outcome.
-    if (isWithinQuietHours(headsUpAt, timeZone, user.quiet_hours_start, user.quiet_hours_end)) {
+      const timeZone = user.timezone || "UTC";
+      // Spec: if the ideal 30-minutes-before instant falls inside quiet
+      // hours, skip this occurrence's heads-up entirely — don't reschedule
+      // it, since a heads-up that arrives after (or right at) the due time
+      // defeats its purpose. Checked against headsUpAt itself, not `now`,
+      // so cron timing/jitter can't change the outcome.
+      if (isWithinQuietHours(headsUpAt, timeZone, user.quiet_hours_start, user.quiet_hours_end)) {
+        resolvedInstanceIds.push(candidate.id);
+        continue;
+      }
+
+      if (!user.push_token) continue; // no device yet; leave unresolved, retry later
+
+      const notificationId = crypto.randomUUID();
+      notificationInserts.push({
+        id: notificationId,
+        user_id: user.id,
+        task_instance_id: candidate.id,
+        channel: "push",
+        kind: "heads_up",
+        sent_at: now.toISOString(),
+      });
+      pushMessages.push({
+        to: user.push_token,
+        priority: "high",
+        _contentAvailable: true,
+        data: {
+          notificationId,
+          taskInstanceId: candidate.id,
+          taskId: task.id,
+          title: "Heads up",
+          body: task.title,
+        },
+      });
       resolvedInstanceIds.push(candidate.id);
-      continue;
+      sentCount++;
+    } catch (err) {
+      console.error("sweepHeadsUpReminders failed for instance", candidate.id, err);
     }
-
-    if (!user.push_token) continue; // no device yet; leave unresolved, retry later
-
-    const notificationId = crypto.randomUUID();
-    notificationInserts.push({
-      id: notificationId,
-      user_id: user.id,
-      task_instance_id: candidate.id,
-      channel: "push",
-      kind: "heads_up",
-      sent_at: now.toISOString(),
-    });
-    pushMessages.push({
-      to: user.push_token,
-      priority: "high",
-      _contentAvailable: true,
-      data: {
-        notificationId,
-        taskInstanceId: candidate.id,
-        taskId: task.id,
-        title: "Heads up",
-        body: task.title,
-      },
-    });
-    resolvedInstanceIds.push(candidate.id);
-    sentCount++;
   }
 
   if (notificationInserts.length > 0) {
@@ -571,28 +579,45 @@ async function sweepReceipts(supabase: SupabaseClient, now: Date, accessToken?: 
   );
 
   for (const row of rows) {
-    const receipt = receipts[row.expo_ticket_id];
-    // Not back yet from Expo — leave receipt_checked_at null so this row
-    // gets retried next sweep, same as before.
-    if (!receipt) continue;
+    // Same per-row isolation as the other sweeps, plus (below) checking
+    // both update() results that were previously fire-and-forget — a
+    // silent failure here left a receipt permanently "unchecked" (retried
+    // forever) or a dead push token never cleared, invisibly.
+    try {
+      const receipt = receipts[row.expo_ticket_id];
+      // Not back yet from Expo — leave receipt_checked_at null so this row
+      // gets retried next sweep, same as before.
+      if (!receipt) continue;
 
-    const receiptError =
-      receipt.status === "error" ? receipt.details?.error ?? receipt.message ?? "unknown" : null;
-    if (receiptError) {
-      console.error("Expo push receipt error", { notificationId: row.id, error: receiptError });
-    }
+      const receiptError =
+        receipt.status === "error" ? receipt.details?.error ?? receipt.message ?? "unknown" : null;
+      if (receiptError) {
+        console.error("Expo push receipt error", { notificationId: row.id, error: receiptError });
+      }
 
-    await supabase
-      .from("notifications")
-      .update({ receipt_checked_at: now.toISOString(), expo_receipt_error: receiptError })
-      .eq("id", row.id);
+      const { error: receiptUpdateErr } = await supabase
+        .from("notifications")
+        .update({ receipt_checked_at: now.toISOString(), expo_receipt_error: receiptError })
+        .eq("id", row.id);
+      if (receiptUpdateErr) {
+        console.error("failed to record receipt check", row.id, receiptUpdateErr.message);
+      }
 
-    // DeviceNotRegistered means this token is dead (app uninstalled, or
-    // Expo rotated it) — clear it so future sweeps stop wasting sends on
-    // it; registerForPushNotificationsAsync issues a fresh one next time
-    // the app opens.
-    if (receiptError === "DeviceNotRegistered") {
-      await supabase.from("users").update({ push_token: null }).eq("id", row.user_id);
+      // DeviceNotRegistered means this token is dead (app uninstalled, or
+      // Expo rotated it) — clear it so future sweeps stop wasting sends on
+      // it; registerForPushNotificationsAsync issues a fresh one next time
+      // the app opens.
+      if (receiptError === "DeviceNotRegistered") {
+        const { error: clearTokenErr } = await supabase
+          .from("users")
+          .update({ push_token: null })
+          .eq("id", row.user_id);
+        if (clearTokenErr) {
+          console.error("failed to clear dead push_token", row.user_id, clearTokenErr.message);
+        }
+      }
+    } catch (err) {
+      console.error("sweepReceipts failed for notification", row.id, err);
     }
   }
 
