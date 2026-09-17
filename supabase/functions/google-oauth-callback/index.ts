@@ -16,6 +16,7 @@
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { verifyOAuthState } from "../_shared/oauthState.ts";
+import { fetchWithTimeout } from "../_shared/fetchWithTimeout.ts";
 
 const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 const APP_REDIRECT_URL = "chur9://google-oauth-callback";
@@ -57,7 +58,7 @@ Deno.serve(async (req) => {
   const redirectUri = `${supabaseUrl}/functions/v1/google-oauth-callback`;
 
   try {
-    const tokenRes = await fetch(TOKEN_ENDPOINT, {
+    const tokenRes = await fetchWithTimeout(TOKEN_ENDPOINT, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
@@ -91,7 +92,9 @@ Deno.serve(async (req) => {
       return redirectToApp({ error: "no_refresh_token" });
     }
 
-    const supabase = createClient(supabaseUrl, serviceRoleKey);
+    const supabase = createClient(supabaseUrl, serviceRoleKey, {
+      global: { fetch: fetchWithTimeout },
+    });
     const { error: upsertError } = await supabase.rpc("upsert_calendar_connection", {
       p_user_id: verified.userId,
       p_provider: "google",
