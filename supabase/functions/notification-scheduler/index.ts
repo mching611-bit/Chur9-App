@@ -81,8 +81,12 @@ interface EscalationNotificationRow {
 }
 
 Deno.serve(async (req) => {
+  // Fails closed: an unset/empty CRON_SECRET must reject every request, not
+  // silently skip the check. `cronSecret &&` used to make a missing secret
+  // equivalent to "no auth required" on a publicly reachable (--no-verify-jwt)
+  // URL — the opposite of what an unconfigured secret should mean.
   const cronSecret = Deno.env.get("CRON_SECRET");
-  if (cronSecret && req.headers.get("x-cron-secret") !== cronSecret) {
+  if (!cronSecret || req.headers.get("x-cron-secret") !== cronSecret) {
     return new Response("Unauthorized", { status: 401 });
   }
 
