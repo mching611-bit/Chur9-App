@@ -75,7 +75,29 @@ export async function recordNotificationAction(
     .eq("id", notificationId);
   if (updateNotifError) throw new Error(updateNotifError.message);
 
-  await supabase.from("task_instances").update({ consecutive_ignored: 0 }).eq("id", taskInstanceId);
+  // A notification can be actioned long after the fact — a push already
+  // sitting in the OS tray, tapped after the task was resolved some other
+  // way in the meantime. Recording that the notification was responded to
+  // (above) is still correct bookkeeping, but nothing past this point
+  // should touch an already-completed instance: the snooze branch below
+  // unconditionally sets status back to "active", which would otherwise
+  // resurrect a completed task_instance and hand it straight back to the
+  // escalation engine as if it were still legitimately outstanding.
+  const { data: currentInstance, error: statusError } = await supabase
+    .from("task_instances")
+    .select("status")
+    .eq("id", taskInstanceId)
+    .single();
+  if (statusError || !currentInstance) {
+    throw new Error(statusError?.message ?? "Task instance not found.");
+  }
+  if (currentInstance.status === "completed") return;
+
+  const { error: resetError } = await supabase
+    .from("task_instances")
+    .update({ consecutive_ignored: 0 })
+    .eq("id", taskInstanceId);
+  if (resetError) throw new Error(resetError.message);
 
   if (action === "done") {
     const { data, error } = await supabase
