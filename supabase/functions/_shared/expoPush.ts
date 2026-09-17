@@ -4,6 +4,8 @@
 // and iOS (APNs) from the same call, keyed only by each device's Expo push
 // token.
 
+import { fetchWithTimeout } from "./fetchWithTimeout.ts";
+
 const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
 const EXPO_RECEIPTS_URL = "https://exp.host/--/api/v2/push/getReceipts";
 const BATCH_SIZE = 100; // Expo's documented max messages per request.
@@ -60,7 +62,7 @@ export async function sendExpoPushNotifications(
     // notification-scheduler` instead of being guessed at.
     console.log("Expo push request", JSON.stringify(batch));
 
-    const res = await fetch(EXPO_PUSH_URL, {
+    const res = await fetchWithTimeout(EXPO_PUSH_URL, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -128,7 +130,7 @@ export async function checkExpoPushReceipts(
   if (ticketIds.length === 0) return {};
   const result: Record<string, ExpoPushReceipt> = {};
   for (const batch of chunk(ticketIds, BATCH_SIZE)) {
-    const res = await fetch(EXPO_RECEIPTS_URL, {
+    const res = await fetchWithTimeout(EXPO_RECEIPTS_URL, {
       method: "POST",
       headers: {
         "content-type": "application/json",
