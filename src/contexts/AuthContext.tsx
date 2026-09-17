@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
+import { AUTH_CALLBACK_URL } from "../lib/authDeepLink";
 
 interface AuthContextValue {
   session: Session | null;
@@ -34,7 +35,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       session,
       initializing,
       signUp: async (email, password) => {
-        const { error } = await supabase.auth.signUp({ email, password });
+        // Without this, Supabase falls back to the project's dashboard
+        // Site URL for the confirmation email's link — which defaults to
+        // http://localhost:3000 on a fresh project and has no way to open
+        // this app. See src/lib/authDeepLink.ts for what receives it.
+        const { error } = await supabase.auth.signUp({
+          email,
+          password,
+          options: { emailRedirectTo: AUTH_CALLBACK_URL },
+        });
         return { error: error?.message ?? null };
       },
       signIn: async (email, password) => {

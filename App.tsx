@@ -11,6 +11,7 @@ import {
   registerNotificationCategoriesAsync,
   setupNotificationResponseHandling,
 } from "./src/lib/pushNotifications";
+import { setupAuthDeepLinkHandling } from "./src/lib/authDeepLink";
 
 export default function App() {
   useEffect(() => {
@@ -23,6 +24,13 @@ export default function App() {
     registerBackgroundNotificationTaskAsync();
     const teardown = setupNotificationResponseHandling();
     return teardown;
+  }, []);
+
+  useEffect(() => {
+    // Catches the confirmation-email deep link (both cold-start and while
+    // already running) and completes the Supabase session from it — see
+    // src/lib/authDeepLink.ts.
+    return setupAuthDeepLinkHandling();
   }, []);
 
   return (
